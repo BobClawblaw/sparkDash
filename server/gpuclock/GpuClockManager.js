@@ -44,13 +44,24 @@ const PASSWORD_ATTEMPTS_GLOBAL = 9;
 
 const httpError = (status, message, code) => Object.assign(new Error(message), { status, code });
 
+/**
+ * Why this unit cannot take a cap, or null when it can. One source of truth for
+ * the per-unit routes and the fleet batch, which reports the reason per unit
+ * instead of failing the whole call.
+ */
+export function gpuClockUnsupportedReason(spark) {
+  if (!spark) return "Spark not found";
+  if (spark.kind === "host") return "GPU clock caps are only supported on Spark units";
+  if (spark.platform === "windows" || spark.platform === "darwin") {
+    return "GPU clock caps are only supported on Linux Spark units";
+  }
+  return null;
+}
+
 /** @param {object} spark registry entry */
 export function assertSupported(spark) {
-  if (!spark) throw httpError(404, "Spark not found");
-  if (spark.kind === "host") throw httpError(400, "GPU clock caps are only supported on Spark units");
-  if (spark.platform === "windows" || spark.platform === "darwin") {
-    throw httpError(400, "GPU clock caps are only supported on Linux Spark units");
-  }
+  const reason = gpuClockUnsupportedReason(spark);
+  if (reason) throw httpError(spark ? 400 : 404, reason);
 }
 
 /**

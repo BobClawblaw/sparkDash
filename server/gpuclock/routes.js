@@ -3,6 +3,9 @@
  * Host/Origin middleware, so a token (when SPARKDASH_TOKEN is set) is required
  * exactly as for power actions. Changing a cap uses the destructive limiter.
  */
+import { gpuClockUnsupportedReason } from "./GpuClockManager.js";
+import { parseCapRequest } from "./commands.js";
+
 const LOOPBACK = /^(::1|127\.\d+\.\d+\.\d+|::ffff:127\.\d+\.\d+\.\d+)$/;
 const FORWARDED = ["x-forwarded-for", "x-forwarded-host", "x-real-ip", "forwarded"];
 
@@ -87,4 +90,70 @@ export function registerGpuClockRoutes(app, { manager, registry, recordEvent, al
       res.json({ success: true });
     })
   );
+}
+
+/**
+ * POST /api/sparks/gpu-clock-all — fleet-wide batch, registered before the
+ * per-unit routes (a plain Sparks-suffix path, like shutdown-all). Body is
+ * `{ maxMHz, persist? }` or `{ reset: true }` — exactly one of maxMHz/reset.
+ * One limiter hit per batch; every unit still gets its own Activity event.
+ */
+export function registerGpuClockFleetRoute(app, { manager, registry, recordEvent, allowChange, rejectLimited }) {
+  app.post("/api/sparks/gpu-clock-all", async (req, res) => {
+    const { maxMHz, persist, reset } = req.body ?? {};
+    const wantsReset = reset === true;
+    if (wantsReset === (maxMHz !== undefined)) {
+      return res.status(400).json({ error: "Send either { maxMHz } or { reset: true }, not both" });
+    }
+    if (!wantsReset) {
+      try {
+        // The same bounds as the per-unit route: a preset list in the UI is not a
+        // guard, and an out-of-range cap must not be answered with a 200.
+        parseCapRequest({ maxMHz, persist });
+      } catch (err) {
+        return res.status(400).json({ error: err.message });
+      }
+    }
+    if (!allowChange(req)) return rejectLimited(res, "Too many GPU clock changes, try again in a minute");
+    const results = [];
+    for (const spark of registry.sparks) {
+      const unsupported = gpuClockUnsupportedReason(spark);
+      if (unsupported) {
+        // Every unit is named in the report: a PC cannot take a cap, and saying so
+        // is the answer. Silence would read as "forgotten" in a fleet-wide action.
+        results.push({ id: spark.id, ok: true, supported: false, reason: unsupported });
+        continue;
+      }
+      try {
+        if (wantsReset) {
+          await manager.reset(spark);
+          recordEvent({
+            type: "gpu.clock.reset",
+            severity: "info",
+            sparkId: spark.id,
+            message: "Fleet reset: GPU clock cap removed",
+          });
+          results.push({ id: spark.id, ok: true, capMHz: null });
+        } else {
+          const out = await manager.apply(spark, { maxMHz, persist: persist === true });
+          recordEvent({
+            type: "gpu.clock.set",
+            severity: "info",
+            sparkId: spark.id,
+            message: `Fleet cap: GPU clock capped at ${out.capMHz} MHz${out.persist ? " (kept after reboot)" : ""}`,
+          });
+          results.push({ id: spark.id, ok: true, capMHz: out.capMHz });
+        }
+      } catch (err) {
+        // No NVIDIA GPU is a normal fleet answer; anything else — including a GPU
+        // that cannot report its maximum — is a failure and says so.
+        if (err?.code === "no-nvidia") {
+          results.push({ id: spark.id, ok: true, supported: false, reason: err.message });
+        } else {
+          results.push({ id: spark.id, ok: false, error: err?.message || String(err) });
+        }
+      }
+    }
+    res.json({ success: true, results });
+  });
 }

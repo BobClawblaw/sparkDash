@@ -227,6 +227,12 @@ export type GpuClockStatus =
       };
     };
 
+/** POST /api/sparks/gpu-clock-all: per-unit outcome of a fleet-wide cap or reset. */
+export type FleetGpuClockResult =
+  | { id: string; ok: true; capMHz: number | null }
+  | { id: string; ok: true; supported: false; reason: string }
+  | { id: string; ok: false; error: string };
+
 /** One health finding for a Spark (server rules in server/health/HealthEvaluator.js). */
 export interface HealthFinding {
   id: "thermal" | "low-power" | "memory" | "xid" | "oom" | "concurrency" | "link-speed" | "roce-link" | "roce-loss";

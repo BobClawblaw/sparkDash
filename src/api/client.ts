@@ -26,6 +26,7 @@ import type {
   InferenceActivity,
   HermesBatchUpdateResponse,
   GpuClockStatus,
+  FleetGpuClockResult,
   HermesUpdatesResponse,
   LauncherAction,
   LauncherJob,
@@ -628,6 +629,21 @@ export function resetGpuClock(id: string, sudoPassword?: string): Promise<{ succ
   return apiFetch(`/api/sparks/${encodeURIComponent(id)}/gpu-clock`, {
     method: "DELETE",
     ...(sudoPassword ? { body: JSON.stringify({ sudoPassword }) } : {}),
+  });
+}
+
+/** POST /api/sparks/gpu-clock-all: cap (or, with reset, clear) the cap on every Spark. */
+export function setFleetGpuClock(maxMHz: number, persist = false): Promise<{ success: boolean; results: FleetGpuClockResult[] }> {
+  return apiFetch("/api/sparks/gpu-clock-all", {
+    method: "POST",
+    body: JSON.stringify({ maxMHz, persist }),
+  });
+}
+
+export function resetFleetGpuClock(): Promise<{ success: boolean; results: FleetGpuClockResult[] }> {
+  return apiFetch("/api/sparks/gpu-clock-all", {
+    method: "POST",
+    body: JSON.stringify({ reset: true }),
   });
 }
 

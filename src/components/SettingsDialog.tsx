@@ -10,6 +10,7 @@ import { XIcon } from "./ui/icons";
 import { SettingRow, ToggleRow } from "./SettingRows";
 import { AlertsDialog } from "./AlertsDialog";
 import { BrowserAlertsSettings } from "./BrowserAlertsSettings";
+import { FleetGpuClock } from "./FleetGpuClock";
 import "../styles/dialogs.css";
 
 interface SettingsDialogProps {
@@ -482,6 +483,15 @@ export function SettingsDialog({ open, onClose, onSaved }: SettingsDialogProps) 
               />
             </>
           )}
+
+          {/* Outside the settings block: a fleet GPU action needs no saved settings. */}
+          <SettingRow
+            title="GPU clock cap"
+            help="Caps the GPU graphics clock on every Spark at once (nvidia-smi -lgc). Offline or GPU-less units are skipped and reported. Remove cap clears it everywhere."
+            stack
+          >
+            <FleetGpuClock />
+          </SettingRow>
 
           {/* Outside the settings block: a rejected token is exactly when settings fail to load. */}
           <SettingRow

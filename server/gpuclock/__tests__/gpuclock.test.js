@@ -407,6 +407,57 @@ test("as a normal user every privileged step goes through sudo -n (real privileg
   }
 });
 
+test("a narrow NOPASSWD rule for the nvidia-smi commands is enough to cap, read back and unlock", () => {
+  const sb = sandbox();
+  const home = path.join(sb.root, "home");
+  fs.mkdirSync(home);
+  try {
+    // NOPASSWD covers `nvidia-smi -lgc` and `-rgc` only, like the rule this
+    // project's own README suggests: `sudo true` and `sudo sh -c ...` are
+    // refused, and `sudo -l` reports the rule.
+    fs.writeFileSync(
+      path.join(sb.bin, "sudo"),
+      `#!/bin/sh
+case "$*" in
+  "-n -l "*) exit 0 ;;
+  "-n "*) ;;
+  *) exit 1 ;;
+esac
+shift
+case "$1" in
+  */nvidia-smi) exec "$@" ;;
+esac
+exit 1
+`,
+      { mode: 0o755 }
+    );
+    const paths = { ...sb.paths, sandbox: false, systemctl: "systemctl" };
+    const env = { ...process.env, HOME: home, PATH: `${sb.bin}:${process.env.PATH}` };
+    const applied = sb.run(buildApplyProgram({ minMHz: 0, maxMHz: 1800 }, paths), { env });
+    assert.equal(applied.RESULT, "ok");
+    assert.equal(sb.read("lock").trim(), "0,1800");
+    assert.equal(sb.read(`units/${UNIT_NAME}`), null);
+    // The marker lands in the SSH user's own config dir, because root's is out of reach.
+    const marker = path.join(home, ".config/sparkdash/gpu-clock-cap");
+    assert.equal(fs.readFileSync(marker, "utf8"), `1800 ${sb.read("boot_id").trim()}\n`);
+    const status = sb.run(buildStatusProgram(paths), { env });
+    assert.equal(status.SUDO, "yes");
+    assert.equal(status.CAP, "1800");
+    const reset = sb.run(buildResetProgram(paths), { env });
+    assert.equal(reset.RESULT, "ok");
+    assert.equal(fs.existsSync(marker), false);
+    assert.equal(sb.read("lock"), null);
+    // Keeping the cap installs a root systemd unit, which this rule cannot do: it
+    // must refuse before the GPU is capped, leaving the clocks untouched.
+    const persisted = sb.run(buildApplyProgram({ minMHz: 0, maxMHz: 1800, persist: true }, paths), { env });
+    assert.equal(persisted.CODE, "no-sudo");
+    assert.equal(sb.read("lock"), null);
+    assert.equal(fs.existsSync(marker), false);
+  } finally {
+    sb.cleanup();
+  }
+});
+
 test("a dropped connection keeps the unit busy for a while, then frees it", async () => {
   let n = 0;
   const m = new GpuClockManager({

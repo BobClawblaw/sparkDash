@@ -30,6 +30,9 @@ const SAFE_PATH = /^\/[A-Za-z0-9_./-]*$/;
 
 const DEFAULT_PATHS = Object.freeze({
   unitDir: "/etc/systemd/system",
+  // Root-owned, like sparkLimiter's. When only the nvidia-smi commands are
+  // permitted through sudo the marker falls back to the SSH user's own
+  // ~/.config/sparkdash, which the status program also reads.
   runDir: "/run/sparkdash",
   bootIdFile: "/proc/sys/kernel/random/boot_id",
   systemdRunDir: "/run/systemd/system",
@@ -121,10 +124,13 @@ export function buildUnit({ minMHz, maxMHz, nvsmi = "/usr/bin/nvidia-smi", runDi
   ].join("\n");
 }
 
-/** The sudo gate: with a typed password a refusal means a wrong password, otherwise missing NOPASSWD. */
+/**
+ * The sudo gate: with a typed password a refusal means a wrong password; otherwise
+ * passwordless sudo is missing (NOPASSWD: ALL, or a rule for the nvidia-smi commands).
+ */
 function needSudoLine(paths) {
   if (!paths.password) {
-    return 'need_sudo || fail no-sudo "passwordless sudo (NOPASSWD: ALL) is required for the user that runs the change"';
+    return 'need_sudo || fail no-sudo "passwordless sudo is required for the user that runs the change (NOPASSWD: ALL, or a rule for nvidia-smi -lgc and -rgc)"';
   }
   return [
     "need_sudo || { case \"$SUDO_ERR\" in",
@@ -157,6 +163,13 @@ function header(paths) {
     `UNIT=${paths.unitDir}/${UNIT_NAME}`,
     `RUNDIR=${paths.runDir}`,
     `MARKER=${paths.runDir}/${MARKER_FILE}`,
+    // The marker goes next to the systemd unit's own copy when sudo can run a
+    // shell (root-owned, like sparkLimiter's). With only a narrow NOPASSWD rule
+    // for the nvidia-smi commands it goes to the SSH user's config dir instead —
+    // the dashboard reads both, and reset clears both.
+    paths.sandbox ? `HOMEDIR=${paths.runDir}` : 'HOMEDIR="${HOME:-}"',
+    paths.sandbox ? `ALT_DIR=${paths.runDir}` : 'ALT_DIR="$HOMEDIR/.config/sparkdash"',
+    'ALT_MARKER="$ALT_DIR/gpu-clock-cap"',
     `BOOTID_FILE=${paths.bootIdFile}`,
     "NV=''",
     `for c in ${nv}; do if [ -x "$c" ]; then NV="$c"; break; fi; done`,
@@ -172,7 +185,14 @@ function header(paths) {
         "need_sudo() { SUDO_ERR=''; [ -z \"$SUDO\" ] && return 0; command -v sudo >/dev/null 2>&1 || { SUDO_ERR=__missing__; return 1; }; SUDO_ERR=$(printf '%s\\n' \"$PW\" | LC_ALL=C sudo -k -S -p '' true 2>&1 >/dev/null) && return 0; return 1; }"
       : paths.manual
       ? 'need_sudo() { [ -z "$SUDO" ] && return 0; command -v sudo >/dev/null 2>&1 && sudo -v; }'
-      : 'need_sudo() { [ -z "$SUDO" ] && return 0; command -v sudo >/dev/null 2>&1 && sudo -n true >/dev/null 2>&1; }',
+      : // Either NOPASSWD: ALL, or a rule naming the commands actually run — the
+        // README's own example is the narrow one, so a least-privilege unit can cap.
+        'need_sudo() { [ -z "$SUDO" ] && return 0; command -v sudo >/dev/null 2>&1 || return 1; $SUDO true >/dev/null 2>&1 || $SUDO -l "$NV" -lgc 0,3000 >/dev/null 2>&1; }',
+    // Root powers beyond the nvidia-smi commands (`sudo sh -c`): the root-owned
+    // marker needs them, and so does the boot service. `sudo -n true` is not
+    // enough of a probe here — a narrow rule refuses `sh` but still allows `-lgc`.
+    // With a typed password or plain `sudo` the same probe runs through $SUDO.
+    'can_sudo_root() { [ -z "$SUDO" ] && return 0; $SUDO sh -c : >/dev/null 2>&1; }',
     // Removes a previous service (a stale one would re-apply the old cap at boot).
     "drop_service() {",
     '  if [ -f "$UNIT" ]; then',
@@ -193,11 +213,14 @@ export function buildStatusProgram(overrides = {}) {
     "HW=$(hwmax)",
     'if [ "$(id -u)" = 0 ]; then S=root; elif need_sudo; then S=yes; else S=no; fi',
     "CAP=''",
-    'if [ -r "$MARKER" ]; then',
-    '  read -r M B < "$MARKER" || true',
+    'read_marker() {',
+    '  [ -r "$1" ] || return 0',
+    '  read -r M B < "$1" || return 0',
     '  M=$(printf "%s" "${M:-}" | digits); B=$(printf "%s" "${B:-}" | tr -dc "0-9a-fA-F-")',
     '  if [ -n "$M" ] && [ "$B" = "$(bootid)" ]; then CAP=$M; fi',
-    "fi",
+    '}',
+    'read_marker "$MARKER"',
+    '[ -n "$CAP" ] || read_marker "$ALT_MARKER"',
     "INST=0; CLK=''; EN=''; ACT=''",
     'if [ -f "$UNIT" ]; then',
     "  INST=1",
@@ -225,11 +248,25 @@ export function buildApplyProgram({ minMHz, maxMHz, persist }, overrides = {}) {
     '[ -n "$HW" ] || fail no-gpu "could not read the GPU maximum clock"',
     '[ "$MAX" -le "$HW" ] || fail range "the cap is above this GPU\'s maximum clock ($HW MHz)"',
     needSudoLine(paths),
+    // Keeping the cap installs a systemd unit as root, so a narrow rule cannot do
+    // it: refuse before the cap is applied. Capping first and failing on the
+    // service would leave the GPU capped with an error on screen. Asked before
+    // the systemd check, so the refusal does not depend on the unit's init state.
+    'if [ "$PERSIST" = 1 ] && ! can_sudo_root; then fail no-sudo "keeping the cap after reboot installs a system service, which needs passwordless sudo for systemctl and install (NOPASSWD: ALL)"; fi',
     `if [ "$PERSIST" = 1 ] && [ ! -d ${paths.systemdRunDir} ]; then fail no-systemd "systemd is not running on this unit"; fi`,
     // Order matters: nothing existing is touched until the new cap has been accepted by nvidia-smi.
     'lgc() { $SUDO "$NV" -lgc "$MIN,$MAX"; }',
     'lgc_error() { printf "%s" "$1" | head -n 1 | tr -cd "A-Za-z0-9 .,:_()/-" | head -c 160; }',
-    'write_marker() { B=$(bootid); [ -n "$B" ] || return 1; $SUDO sh -c \'mkdir -p "$1" && chmod 755 "$1" && echo "$2 $3" > "$4"\' sh "$RUNDIR" "$MAX" "$B" "$MARKER"; }',
+    'write_marker() {',
+    '  B=$(bootid); [ -n "$B" ] || return 1',
+    '  if can_sudo_root; then',
+    '    $SUDO sh -c \'mkdir -p "$1" && chmod 755 "$1" && echo "$2 $3" > "$4"\' sh "$RUNDIR" "$MAX" "$B" "$MARKER"',
+    '    return $?',
+    '  fi',
+    '  [ -n "$HOMEDIR" ] || return 1',
+    '  mkdir -p "$ALT_DIR" 2>/dev/null || return 1',
+    '  printf "%s %s\\n" "$MAX" "$B" > "$ALT_MARKER" 2>/dev/null || return 1',
+    '}',
     'OUT=$(lgc 2>&1) || fail lgc-failed "nvidia-smi refused the clock cap: $(lgc_error "$OUT")"',
     'if [ "$PERSIST" = 0 ]; then',
     '  if [ -f "$UNIT" ]; then',
@@ -283,7 +320,7 @@ export function buildResetProgram(overrides = {}) {
     needSudoLine(paths),
     'drop_service || fail service-failed "could not remove the existing service"',
     '$SUDO "$NV" -rgc >/dev/null 2>&1 || fail rgc-failed "nvidia-smi could not reset the clocks"',
-    '$SUDO rm -f "$MARKER" || fail marker-failed "could not clear the recorded cap"',
+    'rm -f "$MARKER" "$ALT_MARKER" 2>/dev/null || $SUDO rm -f "$MARKER" "$ALT_MARKER" 2>/dev/null || fail marker-failed "could not clear the recorded cap"',
     paths.manual ? "printf 'Done: GPU clock cap removed.\\n'" : "printf 'RESULT=ok\\n'",
     "exit 0",
     "",
