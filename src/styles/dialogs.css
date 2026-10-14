@@ -1801,6 +1801,16 @@
   color: var(--color-accent-text);
   font-weight: 600;
 }
+/* Picked but not applied: Save is what changes a unit. */
+.set-fleetcap__presets .is-picked {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 1px;
+}
+.set-fleetcap__hint {
+  margin: 0;
+  font-size: 12px;
+  color: var(--color-muted);
+}
 .set-fleetcap__msg {
   margin: 0;
   font-size: 12px;

@@ -34,14 +34,16 @@ const json = (method, body) => ({ method, headers: { "Content-Type": "applicatio
 
 test("fleet cap applies to every spark, reports the hosts it leaves alone, and records one event per unit", async () => {
   const seen = [];
-  await withApp({ run: async (spark, program) => { seen.push([spark.id, program]); return "RESULT=ok\nCAP=2000\nPERSIST=1"; } }, async (base, events) => {
+  // One Spark takes the boot service, the other keeps it with its own @reboot
+  // job: the report carries which hook each took, not just "kept".
+  await withApp({ run: async (spark, program) => { seen.push([spark.id, program]); return `RESULT=ok\nCAP=2000\nPERSIST=1\nPERSIST_KIND=${spark.id === "s2" ? "cron" : "unit"}`; } }, async (base, events) => {
     const res = await fetch(`${base}/gpu-clock-all`, json("POST", { maxMHz: 2000, persist: true }));
     assert.equal(res.status, 200);
     const body = await res.json();
     assert.equal(body.success, true);
     assert.deepEqual(body.results, [
-      { id: "s1", ok: true, capMHz: 2000 },
-      { id: "s2", ok: true, capMHz: 2000 },
+      { id: "s1", ok: true, capMHz: 2000, persistKind: "unit" },
+      { id: "s2", ok: true, capMHz: 2000, persistKind: "cron" },
       { id: "h1", ok: true, supported: false, reason: "GPU clock caps are only supported on Spark units" },
     ]);
     // The batch never runs on a host, and every unit that does run receives both
@@ -50,6 +52,8 @@ test("fleet cap applies to every spark, reports the hosts it leaves alone, and r
     assert.ok(seen.every(([id, program]) => id.startsWith("s") && program.includes("MAX=2000") && program.includes("PERSIST=1")));
     assert.equal(events.length, 2);
     assert.ok(events.every((e) => e.type === "gpu.clock.set" && e.sparkId.startsWith("s")));
+    assert.match(events.find((e) => e.sparkId === "s1").message, /kept after reboot by the boot service/);
+    assert.match(events.find((e) => e.sparkId === "s2").message, /kept after reboot by the @reboot cron job/);
   });
 });
 
@@ -58,8 +62,8 @@ test("fleet reset clears every cap and reports the hosts it leaves alone", async
     const res = await fetch(`${base}/gpu-clock-all`, json("POST", { reset: true }));
     const body = await res.json();
     assert.deepEqual(body.results, [
-      { id: "s1", ok: true, capMHz: null },
-      { id: "s2", ok: true, capMHz: null },
+      { id: "s1", ok: true, capMHz: null, persistKind: "none" },
+      { id: "s2", ok: true, capMHz: null, persistKind: "none" },
       { id: "h1", ok: true, supported: false, reason: "GPU clock caps are only supported on Spark units" },
     ]);
     assert.equal(events.length, 2);
@@ -98,7 +102,7 @@ test("a unit without a GPU is a normal result, other failures are per-unit error
     const body = await res.json();
     assert.deepEqual(body.results, [
       { id: "s1", ok: true, supported: false, reason: "nvidia-smi was not found on this unit" },
-      { id: "s2", ok: true, capMHz: null },
+      { id: "s2", ok: true, capMHz: null, persistKind: "none" },
       { id: "h1", ok: true, supported: false, reason: "GPU clock caps are only supported on Spark units" },
     ]);
   });

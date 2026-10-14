@@ -39,7 +39,7 @@ test("PUT validates, applies, records an Activity event and answers with the new
 
     const ok = await fetch(`${base}/s1/gpu-clock`, json("PUT", { maxMHz: 1800, persist: true }));
     assert.equal(ok.status, 200);
-    assert.deepEqual(await ok.json(), { success: true, capMHz: 1800, persist: true, minMHz: 0 });
+    assert.deepEqual(await ok.json(), { success: true, capMHz: 1800, persist: true, persistKind: "unit", minMHz: 0 });
     assert.equal(events.length, 1);
     assert.equal(events[0].type, "gpu.clock.set");
     assert.match(events[0].message, /1800 MHz.*after reboot/);

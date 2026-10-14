@@ -1,8 +1,8 @@
 import { act } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { fetchGpuClock, fetchSparks, resetFleetGpuClock, setFleetGpuClock } from "../api/client";
-import type { FleetGpuClockResult, GpuClockStatus, SparkConfig } from "../api/types";
-import { FleetGpuClock } from "./FleetGpuClock";
+import type { FleetGpuClockResult, GpuClockPersistKind, GpuClockStatus, SparkConfig } from "../api/types";
+import { FleetGpuClock, type FleetGpuClockApi } from "./FleetGpuClock";
 import { cleanupRenders, flush, render } from "../testing/render";
 
 vi.mock("../api/client", () => ({
@@ -25,12 +25,18 @@ const FLEET = {
   ] as SparkConfig[],
 };
 
-const ready = (capMHz: number | null): GpuClockStatus => ({
+/** A unit that can cap, with the boot hook it would use. */
+const ready = (
+  capMHz: number | null,
+  persistKind: GpuClockPersistKind = "unit",
+): GpuClockStatus => ({
   supported: true,
   hwMaxMHz: 3003,
   capMHz,
   sudo: "yes",
+  persistKind,
   service: { installed: false, clocks: null, enabled: null, active: null },
+  cron: { installed: false, clocks: null },
 });
 
 const done = (results: FleetGpuClockResult[]) => ({ success: true, results });
@@ -52,6 +58,27 @@ const click = async (el: HTMLElement) => {
   await settle();
 };
 
+/** Waits real time, for the per-unit read deadlines. */
+// ES2022 target: `Promise.withResolvers` (ES2024) is not available here.
+const waitFor = async (ms: number) => {
+  await act(async () => {
+    await new Promise((resolve) => setTimeout(resolve, ms));
+  });
+};
+
+/** A read that never answers — a Spark behind a dead SSH connection. */
+const hang = () => new Promise<never>(() => {});
+
+/** Save's side of the contract: run the row's pending pick. */
+const applyPicked = async (ref: { current: FleetGpuClockApi | null }) => {
+  let ok = false;
+  await act(async () => {
+    ok = await ref.current!.apply();
+  });
+  await settle();
+  return ok;
+};
+
 describe("FleetGpuClock", () => {
   beforeEach(() => {
     listApi.mockReset().mockResolvedValue(FLEET);
@@ -61,28 +88,45 @@ describe("FleetGpuClock", () => {
   });
   afterEach(() => cleanupRenders());
 
-  it("marks the cap every Spark shares and applies a picked one in one click", async () => {
-    setApi.mockResolvedValue(done([
-      { id: "spark1", ok: true, capMHz: 1800 },
-      { id: "spark2", ok: true, capMHz: 1800 },
-    ]));
-    const { container } = render(<FleetGpuClock />);
+  it("marks the cap every Spark shares, and a pick only selects until Save applies it", async () => {
+    const ref = { current: null as FleetGpuClockApi | null };
+    const told: boolean[] = [];
+    const { container } = render(
+      <FleetGpuClock apiRef={ref} onPendingChange={(pending) => told.push(pending)} />,
+    );
     await settle();
 
     expect(container.querySelector('[data-testid="fleet-now"]')!.textContent).toContain("Now: capped at 2100 MHz on 2 units");
     expect(byText(container, "2100 MHz").className).toContain("is-current");
-    // No Apply step: the row is the choice, and the hosts are not asked at all.
-    expect([...container.querySelectorAll("button")].map((b) => b.textContent)).not.toContain("Apply");
+    expect(ref.current!.pending()).toBe(false);
+    // Hosts are not asked at all: a PC has no clock to cap.
     expect(statusApi).toHaveBeenCalledWith("spark1");
     expect(statusApi).toHaveBeenCalledWith("spark2");
     expect(statusApi).not.toHaveBeenCalledWith("desk");
 
+    setApi.mockResolvedValue(done([
+      { id: "spark1", ok: true, capMHz: 1800, persistKind: "unit" },
+      { id: "spark2", ok: true, capMHz: 1800, persistKind: "unit" },
+    ]));
     await click(byText(container, "1800 MHz"));
 
+    // The pick is a selection: nothing has been sent, and Save is what runs it.
+    expect(setApi).not.toHaveBeenCalled();
+    expect(ref.current!.pending()).toBe(true);
+    expect(told.at(-1)).toBe(true);
+    expect(byText(container, "1800 MHz").className).toContain("is-picked");
+    expect(byText(container, "2100 MHz").className).toContain("is-current");
+
+    expect(await applyPicked(ref)).toBe(true);
+
+    // Both units reported a hook, so keeping the cap is the default, not an opt-in.
     expect(setApi).toHaveBeenCalledWith(1800, true);
     const msg = status(container)!;
     expect(msg.textContent).toContain("Capped at 1800 MHz — 2 of 2 units");
+    expect(msg.textContent).toContain("kept after reboot");
     expect(msg.className).not.toContain("is-err");
+    // Applied: the pick is spent, and choosing the fleet's own state again is a no-op.
+    expect(ref.current!.pending()).toBe(false);
   });
 
   it("marks nothing when the fleet is on different caps", async () => {
@@ -94,18 +138,22 @@ describe("FleetGpuClock", () => {
     expect(container.querySelectorAll(".is-current")).toHaveLength(0);
   });
 
-  it("marks Full capacity when no cap is applied, and clears the caps on click", async () => {
+  it("marks Full capacity when no cap is applied, and clears the caps only when applied", async () => {
     statusApi.mockResolvedValue(ready(null));
+    const ref = { current: null as FleetGpuClockApi | null };
     resetApi.mockResolvedValue(done([
-      { id: "spark1", ok: true, capMHz: null },
-      { id: "spark2", ok: true, capMHz: null },
+      { id: "spark1", ok: true, capMHz: null, persistKind: "none" },
+      { id: "spark2", ok: true, capMHz: null, persistKind: "none" },
     ]));
-    const { container } = render(<FleetGpuClock />);
+    const { container } = render(<FleetGpuClock apiRef={ref} />);
     await settle();
 
     expect(byText(container, "Full capacity").className).toContain("is-current");
 
     await click(byText(container, "Full capacity"));
+    expect(resetApi).not.toHaveBeenCalled();
+
+    expect(await applyPicked(ref)).toBe(true);
 
     expect(resetApi).toHaveBeenCalled();
     expect(setApi).not.toHaveBeenCalled();
@@ -114,31 +162,75 @@ describe("FleetGpuClock", () => {
 
   it("reports a unit that cannot take a cap as skipped, not as an error", async () => {
     setApi.mockResolvedValue(done([
-      { id: "spark1", ok: true, capMHz: 1800 },
+      { id: "spark1", ok: true, capMHz: 1800, persistKind: "unit" },
       { id: "spark2", ok: true, supported: false, reason: "nvidia-smi was not found on this unit" },
     ]));
-    const { container } = render(<FleetGpuClock />);
+    const ref = { current: null as FleetGpuClockApi | null };
+    const { container } = render(<FleetGpuClock apiRef={ref} />);
     await settle();
 
     await click(byText(container, "1800 MHz"));
+    await applyPicked(ref);
 
     const msg = status(container)!;
     expect(msg.textContent).toContain("1 of 2 units, 1 skipped");
     expect(msg.className).not.toContain("is-err");
   });
 
-  it("keeps the cap after reboot unless the box is unticked", async () => {
-    setApi.mockResolvedValue(done([{ id: "spark1", ok: true, capMHz: 1800 }]));
-    const { container } = render(<FleetGpuClock />);
+  it("defaults Keep after reboot off when no unit has a boot hook to use", async () => {
+    statusApi.mockResolvedValue(ready(2100, "none"));
+    setApi.mockResolvedValue(done([{ id: "spark1", ok: true, capMHz: 1800, persistKind: "none" }]));
+    const ref = { current: null as FleetGpuClockApi | null };
+    const { container } = render(<FleetGpuClock apiRef={ref} />);
     await settle();
 
-    const box = container.querySelector('input[type="checkbox"]') as HTMLInputElement;
-    expect(box.checked).toBe(true);
+    // Neither a root shell for the boot service nor cron for an @reboot job: the
+    // row must not default to an option that is going to be refused.
+    expect((container.querySelector('input[type="checkbox"]') as HTMLInputElement).checked).toBe(false);
 
-    await click(box);
     await click(byText(container, "1800 MHz"));
+    await applyPicked(ref);
 
     expect(setApi).toHaveBeenCalledWith(1800, false);
+  });
+
+  it("defaults it on where the units keep the cap with their own cron job", async () => {
+    // The @reboot job needs only the narrow nvidia-smi rule, so a Spark that has
+    // no root shell still keeps its cap — and the row says which way.
+    statusApi.mockResolvedValue(ready(2100, "cron"));
+    setApi.mockResolvedValue(done([
+      { id: "spark1", ok: true, capMHz: 1800, persistKind: "cron" },
+      { id: "spark2", ok: true, capMHz: 1800, persistKind: "cron" },
+    ]));
+    const ref = { current: null as FleetGpuClockApi | null };
+    const { container } = render(<FleetGpuClock apiRef={ref} />);
+    await settle();
+
+    expect((container.querySelector('input[type="checkbox"]') as HTMLInputElement).checked).toBe(true);
+
+    await click(byText(container, "1800 MHz"));
+    await applyPicked(ref);
+
+    expect(setApi).toHaveBeenCalledWith(1800, true);
+    expect(status(container)!.textContent).toContain("kept by an @reboot cron job on each unit");
+  });
+
+  it("names the hook per unit when one Spark keeps the cap differently from another", async () => {
+    statusApi.mockResolvedValue(ready(2100, "cron"));
+    setApi.mockResolvedValue(done([
+      { id: "spark1", ok: true, capMHz: 1800, persistKind: "unit" },
+      { id: "spark2", ok: true, capMHz: 1800, persistKind: "cron" },
+    ]));
+    const ref = { current: null as FleetGpuClockApi | null };
+    const { container } = render(<FleetGpuClock apiRef={ref} />);
+    await settle();
+
+    await click(byText(container, "1800 MHz"));
+    await applyPicked(ref);
+
+    expect(status(container)!.textContent).toContain(
+      "Capped at 1800 MHz — 2 of 2 units — kept after reboot (boot service or @reboot job, per unit)",
+    );
   });
 
   it("says nothing changed when every unit refuses, names the reason once and the way out", async () => {
@@ -147,10 +239,12 @@ describe("FleetGpuClock", () => {
       { id: "spark1", ok: false, error: refusal },
       { id: "spark2", ok: false, error: refusal },
     ]));
-    const { container } = render(<FleetGpuClock />);
+    const ref = { current: null as FleetGpuClockApi | null };
+    const { container } = render(<FleetGpuClock apiRef={ref} />);
     await settle();
 
     await click(byText(container, "1800 MHz"));
+    expect(await applyPicked(ref)).toBe(false);
 
     const msg = status(container)!;
     expect(msg.textContent).toContain("Nothing changed — 0 of 2 units capped");
@@ -160,14 +254,37 @@ describe("FleetGpuClock", () => {
     expect(msg.textContent).toContain("spark1, spark2:");
     expect(msg.textContent).toContain("Untick “Keep after reboot”");
     expect(msg.className).toContain("is-err");
+    // Refused everywhere: the pick is still there to retry, not silently dropped.
+    expect(ref.current!.pending()).toBe(true);
+  });
+
+  it("keeps the box usable while a read is unknown, but not when the fleet is known to refuse", async () => {
+    statusApi.mockResolvedValue(ready(2100, "none"));
+    const narrow = { current: null as FleetGpuClockApi | null };
+    const one = render(<FleetGpuClock apiRef={narrow} />);
+    await settle();
+    // Every unit answered, and the answer is "no boot hook here".
+    expect((one.container.querySelector('input[type="checkbox"]') as HTMLInputElement).disabled).toBe(true);
+    expect(one.container.textContent).toContain("The cap applies until the next reboot");
+    cleanupRenders();
+
+    statusApi.mockImplementation(() => hang());
+    setApi.mockResolvedValue(done([{ id: "spark1", ok: true, capMHz: 1800, persistKind: "unit" }]));
+    const ref = { current: null as FleetGpuClockApi | null };
+    const { container } = render(<FleetGpuClock apiRef={ref} readTimeoutMs={20} />);
+    await waitFor(120);
+    // Nothing read: unknown is not "refused", so the box stays available.
+    expect((container.querySelector('input[type="checkbox"]') as HTMLInputElement).disabled).toBe(false);
   });
 
   it("surfaces a refused request", async () => {
     setApi.mockRejectedValue(new Error("Too many GPU clock changes, try again in a minute"));
-    const { container } = render(<FleetGpuClock />);
+    const ref = { current: null as FleetGpuClockApi | null };
+    const { container } = render(<FleetGpuClock apiRef={ref} />);
     await settle();
 
     await click(byText(container, "2300 MHz"));
+    expect(await applyPicked(ref)).toBe(false);
 
     const msg = status(container)!;
     expect(msg.textContent).toContain("Too many GPU clock changes");
@@ -175,42 +292,26 @@ describe("FleetGpuClock", () => {
   });
 
   it("marks what the units that answered report when one read hangs, and counts the other", async () => {
-    vi.useFakeTimers();
-    try {
-      // A Spark behind a dead SSH connection answers nothing, ever.
-      statusApi.mockImplementation((id: string) =>
-        id === "spark2" ? new Promise<GpuClockStatus>(() => {}) : Promise.resolve(ready(2100)),
-      );
-      const { container } = render(<FleetGpuClock />);
+    statusApi.mockImplementation(async (id) =>
+      id === "spark2" ? hang() : ready(2100),
+    );
+    const { container } = render(<FleetGpuClock readTimeoutMs={20} />);
+    await waitFor(120);
 
-      await act(async () => {
-        await vi.advanceTimersByTimeAsync(6000);
-      });
-
-      const line = container.querySelector('[data-testid="fleet-now"]')!.textContent;
-      expect(line).toContain("capped at 2100 MHz on 1 unit");
-      expect(line).toContain("1 unreadable");
-      expect(byText(container, "2100 MHz").className).toContain("is-current");
-    } finally {
-      vi.useRealTimers();
-    }
+    expect(container.querySelector('[data-testid="fleet-now"]')!.textContent).toContain(
+      "Now: capped at 2100 MHz on 1 unit, 1 unreadable",
+    );
+    expect(byText(container, "2100 MHz").className).toContain("is-current");
   });
 
   it("leaves the states usable, not 'Reading the fleet…', when every read hangs", async () => {
-    vi.useFakeTimers();
-    try {
-      statusApi.mockImplementation(() => new Promise<GpuClockStatus>(() => {}));
-      const { container } = render(<FleetGpuClock />);
+    statusApi.mockImplementation(() => hang());
+    const { container } = render(<FleetGpuClock readTimeoutMs={20} />);
+    await waitFor(160);
 
-      await act(async () => {
-        await vi.advanceTimersByTimeAsync(6000);
-      });
-
-      const line = container.querySelector('[data-testid="fleet-now"]')!.textContent;
-      expect(line).toContain("No unit reports its clock right now");
-      expect(byText(container, "Full capacity")).toBeTruthy();
-    } finally {
-      vi.useRealTimers();
-    }
+    expect(byText(container, "2400 MHz").disabled).toBe(false);
+    expect(container.querySelector('[data-testid="fleet-now"]')!.textContent).toContain(
+      "No unit reports its clock right now",
+    );
   });
 });

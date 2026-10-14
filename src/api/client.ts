@@ -16,6 +16,7 @@ import type {
   VulnHuntStreamRead,
   ActivityEvent,
   ActivityEventsPage,
+  GpuClockPersistKind,
   EnergyHistory,
   MonthlyEnergy,
   TokenHistory,
@@ -613,18 +614,18 @@ export function fetchGpuClockCommand(
   return apiFetch(`/api/sparks/${encodeURIComponent(id)}/gpu-clock/command?${params}`);
 }
 
-/** Cap the GPU graphics clock now; `persist` also installs the boot service. */
+/** Cap the GPU graphics clock now; `persist` also installs the boot hook this unit can take. */
 export function setGpuClock(
   id: string,
   body: { maxMHz: number; minMHz?: number; persist: boolean; sudoPassword?: string }
-): Promise<{ success: boolean; capMHz: number; persist: boolean }> {
+): Promise<{ success: boolean; capMHz: number; persist: boolean; persistKind: GpuClockPersistKind }> {
   return apiFetch(`/api/sparks/${encodeURIComponent(id)}/gpu-clock`, {
     method: "PUT",
     body: JSON.stringify(body),
   });
 }
 
-/** Remove the cap and the boot service. */
+/** Remove the cap and its boot hook. */
 export function resetGpuClock(id: string, sudoPassword?: string): Promise<{ success: boolean }> {
   return apiFetch(`/api/sparks/${encodeURIComponent(id)}/gpu-clock`, {
     method: "DELETE",

@@ -1,8 +1,11 @@
 /**
  * On-unit programs for the GPU clock cap (the sparkLimiter behaviour):
- * `nvidia-smi -lgc MIN,MAX`, optionally kept across reboots by a oneshot systemd
- * service, and a root-written marker (`/run/sparkdash/gpu-clock-cap`) so the
- * dashboard can show the current cap (NVML cannot read an -lgc lock back).
+ * `nvidia-smi -lgc MIN,MAX`, optionally kept across reboots — by the oneshot
+ * systemd service where sudo reaches a root shell, otherwise by an `@reboot`
+ * line in the SSH user's own crontab that runs the same command through the same
+ * narrow sudo rule — and a marker (`/run/sparkdash/gpu-clock-cap` as root, else
+ * the user's `~/.config/sparkdash/gpu-clock-cap`) so the dashboard can show the
+ * current cap (NVML cannot read an -lgc lock back).
  *
  * Every program is a POSIX sh script. The only values interpolated into it are
  * integers that this module validates itself plus fixed paths; nothing from a
@@ -19,6 +22,26 @@ export const GPU_CLOCK_SERVICE = "spark-gpu-clock-limit";
 /** Same name sparkLimiter uses, so the two tools manage the same unit. */
 export const UNIT_NAME = `${GPU_CLOCK_SERVICE}.service`;
 export const MARKER_FILE = "gpu-clock-cap";
+/** Marker on the @reboot crontab line: an install replaces its own, a drop removes exactly it. */
+export const CRON_TAG = "sparkdash-gpu-clock-cap";
+
+/**
+ * The `@reboot` crontab line used where sudo cannot reach a root shell. It
+ * applies the cap at boot through the narrow rule the cap itself uses, so keeping
+ * it needs no privilege capping does not already have, and refreshes the marker,
+ * because a boot invalidates it. Placeholders are filled by the program from
+ * paths it resolved on the unit; `$(...)` runs at boot, not at install time.
+ * No `%` may appear: crontab would read one as a newline.
+ */
+function cronLine({ minMHz, maxMHz }) {
+  return `${[
+    `@reboot for i in 1 2 3; do /bin/sleep 20; @@SUDO@@ -n @@NV@@ -lgc ${minMHz},${maxMHz} && {`,
+    `/bin/mkdir -p "@@ALT_DIR@@" &&`,
+    `echo "${maxMHz} $(/bin/cat @@BOOTID@@)" > "@@ALT_MARKER@@" && break;`,
+    "}; done",
+    `# ${CRON_TAG}`,
+  ].join(" ")}\n`;
+}
 
 /** Lowest cap accepted: below this the GPU is barely usable and the box looks hung. */
 export const MIN_CAP_MHZ = 300;
@@ -46,6 +69,9 @@ const DEFAULT_PATHS = Object.freeze({
   password: false,
   // Test sandbox only: run unprivileged against fake binaries and a temp tree.
   sandbox: false,
+  // Test sandbox only: a fake `sudo -n` (absolute path) standing in for a unit
+  // whose only passwordless rule is the narrow nvidia-smi one. Empty = sandbox root.
+  sandboxSudo: "",
 });
 
 /** Paths come from code only (tests point them at a sandbox); still refuse anything odd. */
@@ -53,6 +79,7 @@ function resolvePaths(overrides = {}) {
   const p = { ...DEFAULT_PATHS, ...overrides };
   const list = [p.unitDir, p.runDir, p.bootIdFile, p.systemdRunDir, ...p.nvsmi];
   if (p.systemctl !== "systemctl") list.push(p.systemctl);
+  if (p.sandboxSudo) list.push(p.sandboxSudo);
   for (const v of list) {
     if (typeof v !== "string" || !SAFE_PATH.test(v) || v.includes("..")) {
       throw new Error("unsafe path in GPU clock program");
@@ -156,8 +183,11 @@ function header(paths) {
         ]
       : []),
     'SUDO=""',
-    paths.sandbox ? ":" : `[ "$(id -u)" = 0 ] || SUDO="${paths.password ? "spw_sudo" : paths.manual ? "sudo" : "sudo -n"}"`,
-
+    paths.sandbox
+      ? paths.sandboxSudo
+        ? `SUDO="${paths.sandboxSudo}"`
+        : ":"
+      : `[ "$(id -u)" = 0 ] || SUDO="${paths.password ? "spw_sudo" : paths.manual ? "sudo" : "sudo -n"}"`,
     `SYSTEMCTL=${paths.systemctl}`,
     `OWNER="${paths.sandbox ? "" : "-o root -g root"}"`,
     `UNIT=${paths.unitDir}/${UNIT_NAME}`,
@@ -193,6 +223,35 @@ function header(paths) {
     // enough of a probe here — a narrow rule refuses `sh` but still allows `-lgc`.
     // With a typed password or plain `sudo` the same probe runs through $SUDO.
     'can_sudo_root() { [ -z "$SUDO" ] && return 0; $SUDO sh -c : >/dev/null 2>&1; }',
+    // Keeping the cap without root: a @reboot line in the SSH user's own crontab,
+    // offered only where cron is there to run it.
+    `CRON_TAG="${CRON_TAG}"`,
+    'CRONBIN=$(command -v crontab 2>/dev/null || true)',
+    'cron_lines() { [ -n "$CRONBIN" ] || return 0; "$CRONBIN" -l 2>/dev/null || true; }',
+    'cron_installed() { cron_lines | grep -q "$CRON_TAG"; }',
+    'cron_clocks() { cron_lines | grep "$CRON_TAG" | sed -n \'s/.*-lgc \\([0-9][0-9]*,[0-9][0-9]*\\).*/\\1/p\' | head -n 1; }',
+    'can_cron() {',
+    '  [ -n "$CRONBIN" ] || return 1',
+    '  for u in cron.service crond.service; do',
+    `    [ "$($SYSTEMCTL is-active "$u" 2>/dev/null)" = active ] && return 0`,
+    '  done',
+    '  return 1',
+    '}',
+    // Drops just our own line, leaving the user's other jobs alone.
+    "drop_cron() {",
+    '  [ -n "$CRONBIN" ] || return 0',
+    '  cron_installed || return 0',
+    '  T=$(mktemp) || return 1',
+    '  cron_lines | grep -v "$CRON_TAG" > "$T"',
+    '  if [ -s "$T" ]; then',
+    '    "$CRONBIN" "$T" >/dev/null 2>&1 || { rm -f "$T"; return 1; }',
+    '  else',
+    // It was the user's only job: an empty crontab file is not accepted everywhere.
+    '    "$CRONBIN" -r >/dev/null 2>&1 || true',
+    '  fi',
+    '  rm -f "$T"',
+    '  ! cron_installed',
+    '}',
     // Removes a previous service (a stale one would re-apply the old cap at boot).
     "drop_service() {",
     '  if [ -f "$UNIT" ]; then',
@@ -204,7 +263,8 @@ function header(paths) {
   ];
 }
 
-/** Read-only: current cap, hardware maximum, sudo availability and the service state. */
+/** Read-only: current cap, hardware maximum, sudo availability, what would keep
+ * the cap across boots on this unit, and the state of both boot hooks. */
 export function buildStatusProgram(overrides = {}) {
   const paths = resolvePaths(overrides);
   return [
@@ -212,6 +272,15 @@ export function buildStatusProgram(overrides = {}) {
     '[ -n "$NV" ] || fail no-nvidia "nvidia-smi was not found on this unit"',
     "HW=$(hwmax)",
     'if [ "$(id -u)" = 0 ]; then S=root; elif need_sudo; then S=yes; else S=no; fi',
+    // What keeping the cap across boots would use here: the systemd unit where
+    // sudo reaches a root shell, the user's @reboot cron line where only the
+    // narrow nvidia-smi rule does, nothing where neither is available. The
+    // Settings row offers — and defaults — its "Keep after reboot" tick from this.
+    'PK=none; if [ "$S" != no ]; then if can_sudo_root; then PK=unit; elif can_cron; then PK=cron; fi; fi',
+    // A fleet that had NOPASSWD: ALL and then narrowed it can carry both hooks,
+    // so each one is reported on its own.
+    "CI=0; CCLK=''",
+    'if cron_installed; then CI=1; CCLK=$(cron_clocks); fi',
     "CAP=''",
     'read_marker() {',
     '  [ -r "$1" ] || return 0',
@@ -228,18 +297,20 @@ export function buildStatusProgram(overrides = {}) {
     `  EN=$($SYSTEMCTL is-enabled ${UNIT_NAME} 2>/dev/null | head -n 1 | tr -dc "a-z-")`,
     `  ACT=$($SYSTEMCTL is-active ${UNIT_NAME} 2>/dev/null | head -n 1 | tr -dc "a-z-")`,
     "fi",
-    "printf 'RESULT=ok\\nHWMAX=%s\\nSUDO=%s\\nCAP=%s\\nSVC_INSTALLED=%s\\nSVC_CLOCKS=%s\\nSVC_ENABLED=%s\\nSVC_ACTIVE=%s\\n' \"$HW\" \"$S\" \"$CAP\" \"$INST\" \"$CLK\" \"$EN\" \"$ACT\"",
+    "printf 'RESULT=ok\\nHWMAX=%s\\nSUDO=%s\\nPERSIST_KIND=%s\\nCAP=%s\\nSVC_INSTALLED=%s\\nSVC_CLOCKS=%s\\nSVC_ENABLED=%s\\nSVC_ACTIVE=%s\\nCRON_INSTALLED=%s\\nCRON_CLOCKS=%s\\n' \"$HW\" \"$S\" \"$PK\" \"$CAP\" \"$INST\" \"$CLK\" \"$EN\" \"$ACT\" \"$CI\" \"$CCLK\"",
     "exit 0",
     "",
   ].join("\n");
 }
 
-/** Apply a cap now; with `persist`, also install/enable the boot service. */
+/** Apply a cap now; with `persist`, also install the boot hook (the systemd unit
+ * where sudo reaches root, an `@reboot` cron line where it does not). */
 export function buildApplyProgram({ minMHz, maxMHz, persist }, overrides = {}) {
   const paths = resolvePaths(overrides);
   // Defense in depth: the caller validated already, but this is what reaches a root shell.
   const req = parseCapRequest({ minMHz, maxMHz, persist });
   const unit = buildUnit({ minMHz: req.minMHz, maxMHz: req.maxMHz, runDir: paths.runDir, bootIdFile: paths.bootIdFile, nvsmi: "@@NV@@" });
+  const cron = cronLine({ minMHz: req.minMHz, maxMHz: req.maxMHz });
   return [
     ...header(paths),
     `MIN=${req.minMHz}; MAX=${req.maxMHz}; PERSIST=${req.persist ? 1 : 0}`,
@@ -248,12 +319,13 @@ export function buildApplyProgram({ minMHz, maxMHz, persist }, overrides = {}) {
     '[ -n "$HW" ] || fail no-gpu "could not read the GPU maximum clock"',
     '[ "$MAX" -le "$HW" ] || fail range "the cap is above this GPU\'s maximum clock ($HW MHz)"',
     needSudoLine(paths),
-    // Keeping the cap installs a systemd unit as root, so a narrow rule cannot do
-    // it: refuse before the cap is applied. Capping first and failing on the
-    // service would leave the GPU capped with an error on screen. Asked before
-    // the systemd check, so the refusal does not depend on the unit's init state.
-    'if [ "$PERSIST" = 1 ] && ! can_sudo_root; then fail no-sudo "keeping the cap after reboot installs a system service, which needs passwordless sudo for systemctl and install (NOPASSWD: ALL)"; fi',
-    `if [ "$PERSIST" = 1 ] && [ ! -d ${paths.systemdRunDir} ]; then fail no-systemd "systemd is not running on this unit"; fi`,
+    // Keeping the cap needs a root shell (the systemd unit) or cron (the @reboot
+    // line): with neither, refuse before the cap is applied. Capping first and
+    // failing on the boot hook would leave the GPU capped with an error on screen.
+    // Asked before the systemd check, so the refusal does not depend on the unit's
+    // init state.
+    'if [ "$PERSIST" = 1 ] && ! can_sudo_root && ! can_cron; then fail no-sudo "keeping the cap after reboot needs passwordless sudo for the system service (NOPASSWD: ALL) or a running cron service for a @reboot job, and this unit offers neither"; fi',
+    `if [ "$PERSIST" = 1 ] && can_sudo_root && [ ! -d ${paths.systemdRunDir} ]; then fail no-systemd "systemd is not running on this unit"; fi`,
     // Order matters: nothing existing is touched until the new cap has been accepted by nvidia-smi.
     'lgc() { $SUDO "$NV" -lgc "$MIN,$MAX"; }',
     'lgc_error() { printf "%s" "$1" | head -n 1 | tr -cd "A-Za-z0-9 .,:_()/-" | head -c 160; }',
@@ -269,6 +341,8 @@ export function buildApplyProgram({ minMHz, maxMHz, persist }, overrides = {}) {
     '}',
     'OUT=$(lgc 2>&1) || fail lgc-failed "nvidia-smi refused the clock cap: $(lgc_error "$OUT")"',
     'if [ "$PERSIST" = 0 ]; then',
+    // A stale hook of either kind would re-apply the old cap at the next boot.
+    '  if cron_installed; then drop_cron || fail cron-failed "could not remove the existing @reboot job"; fi',
     '  if [ -f "$UNIT" ]; then',
     // Stopping the old service resets the clocks (ExecStop), so the cap is applied again afterwards.
     '    drop_service || fail service-failed "could not remove the existing service"',
@@ -279,6 +353,8 @@ export function buildApplyProgram({ minMHz, maxMHz, persist }, overrides = {}) {
     '  write_marker || fail marker-failed "could not record the cap"',
     "  D=$(mktemp -d) || fail service-failed \"could not create a temporary directory\"",
     '  trap \'rm -rf "$D"\' EXIT',
+    // Root: the oneshot unit sparkLimiter installs.
+    '  if can_sudo_root; then',
     '  if [ -f "$UNIT" ]; then cp "$UNIT" "$D/unit.old" || fail service-failed "could not back up the existing service"; fi',
     "  cat > \"$D/unit\" <<'SPARKDASH_UNIT_EOF'",
     unit.replace(/\n$/, ""),
@@ -302,16 +378,39 @@ export function buildApplyProgram({ minMHz, maxMHz, persist }, overrides = {}) {
     `  $SUDO $SYSTEMCTL restart ${UNIT_NAME} >/dev/null 2>&1 || { rollback; fail service-failed "the service did not start; the cap applies until the next reboot"; }`,
     `  [ "$($SYSTEMCTL is-active ${UNIT_NAME} 2>/dev/null)" = active ] || { rollback; fail service-failed "the service is not active; the cap applies until the next reboot"; }`,
     '  write_marker || fail marker-failed "could not record the cap"',
+    // No root: an @reboot line in the user's own crontab. It runs the very same
+    // `sudo -n nvidia-smi -lgc` the cap has just run, so the narrow rule the unit
+    // already grants is enough — and it refreshes the marker at every boot.
+    '  else',
+    "  cat > \"$D/cron\" <<'SPARKDASH_CRON_EOF'",
+    cron.replace(/\n$/, ""),
+    "SPARKDASH_CRON_EOF",
+    '  SUDO_BIN=$(command -v sudo 2>/dev/null || true)',
+    '  [ -n "$SUDO_BIN" ] || fail no-sudo "sudo was not found on this unit"',
+    '  CRON_LINE=$(sed "s#@@SUDO@@#$SUDO_BIN#g; s#@@NV@@#$NV#g; s#@@ALT_DIR@@#$ALT_DIR#g; s#@@ALT_MARKER@@#$ALT_MARKER#g; s#@@BOOTID@@#$BOOTID_FILE#g" "$D/cron") || fail cron-failed "could not prepare the @reboot job"',
+    '  T=$(mktemp) || fail cron-failed "could not create a temporary file"',
+    '  cron_lines | grep -v "$CRON_TAG" > "$T"',
+    "  printf '%s\\n' \"$CRON_LINE\" >> \"$T\"",
+    '  "$CRONBIN" "$T" >/dev/null 2>&1 || { rm -f "$T"; fail cron-failed "could not add the @reboot job; the cap applies until the next reboot"; }',
+    '  rm -f "$T"',
+    // Crontab implementations rewrite what they store: read back what is really there.
+    '  if ! cron_installed || [ "$(cron_clocks)" != "$MIN,$MAX" ]; then',
+    '    drop_cron',
+    '    fail cron-failed "the @reboot job did not install; the cap applies until the next reboot"',
+    '  fi',
+    '  fi',
     "fi",
+    // Which hook took, so the row can name it instead of a bare "kept".
+    "PK2=none; if [ \"$PERSIST\" = 1 ]; then if can_sudo_root; then PK2=unit; else PK2=cron; fi; fi",
     paths.manual
-      ? "if [ \"$PERSIST\" = 1 ]; then printf 'Done: GPU clock capped at %s MHz and kept after reboot (spark-gpu-clock-limit.service).\\n' \"$MAX\"; else printf 'Done: GPU clock capped at %s MHz until the next reboot.\\n' \"$MAX\"; fi"
-      : "printf 'RESULT=ok\\nCAP=%s\\nPERSIST=%s\\n' \"$MAX\" \"$PERSIST\"",
+      ? "if [ \"$PK2\" = unit ]; then printf 'Done: GPU clock capped at %s MHz and kept after reboot (spark-gpu-clock-limit.service).\\n' \"$MAX\"; elif [ \"$PK2\" = cron ]; then printf 'Done: GPU clock capped at %s MHz and kept after reboot (@reboot cron job).\\n' \"$MAX\"; else printf 'Done: GPU clock capped at %s MHz until the next reboot.\\n' \"$MAX\"; fi"
+      : "printf 'RESULT=ok\\nCAP=%s\\nPERSIST=%s\\nPERSIST_KIND=%s\\n' \"$MAX\" \"$PERSIST\" \"$PK2\"",
     "exit 0",
     "",
   ].join("\n");
 }
 
-/** Remove the cap: stop and delete the service, `nvidia-smi -rgc`, drop the marker. */
+/** Remove the cap: stop and delete both boot hooks, `nvidia-smi -rgc`, drop the marker. */
 export function buildResetProgram(overrides = {}) {
   const paths = resolvePaths(overrides);
   return [
@@ -319,6 +418,7 @@ export function buildResetProgram(overrides = {}) {
     '[ -n "$NV" ] || fail no-nvidia "nvidia-smi was not found on this unit"',
     needSudoLine(paths),
     'drop_service || fail service-failed "could not remove the existing service"',
+    'drop_cron || fail cron-failed "could not remove the existing @reboot job"',
     '$SUDO "$NV" -rgc >/dev/null 2>&1 || fail rgc-failed "nvidia-smi could not reset the clocks"',
     'rm -f "$MARKER" "$ALT_MARKER" 2>/dev/null || $SUDO rm -f "$MARKER" "$ALT_MARKER" 2>/dev/null || fail marker-failed "could not clear the recorded cap"',
     paths.manual ? "printf 'Done: GPU clock cap removed.\\n'" : "printf 'RESULT=ok\\n'",
@@ -335,8 +435,9 @@ export function buildResetProgram(overrides = {}) {
  */
 export function parseProgramOutput(out) {
   const KEYS = new Set([
-    "RESULT", "CODE", "MSG", "HWMAX", "SUDO", "CAP", "PERSIST",
+    "RESULT", "CODE", "MSG", "HWMAX", "SUDO", "PERSIST_KIND", "PERSIST", "CAP",
     "SVC_INSTALLED", "SVC_CLOCKS", "SVC_ENABLED", "SVC_ACTIVE",
+    "CRON_INSTALLED", "CRON_CLOCKS",
   ]);
   const res = {};
   for (const line of String(out ?? "").split("\n")) {

@@ -24,6 +24,9 @@ export function isSecureRequest(req) {
   return !relayed && LOOPBACK.test(String(req.socket?.remoteAddress || ""));
 }
 
+/** How the cap is kept across boots, for the Activity line and the fleet report. */
+const keptText = (persistKind) => (persistKind === "cron" ? " by the @reboot cron job" : " by the boot service");
+
 export function registerGpuClockRoutes(app, { manager, registry, recordEvent, allowRead, allowChange, rejectLimited }) {
   const handle = (fn) => async (req, res) => {
     try {
@@ -74,7 +77,7 @@ export function registerGpuClockRoutes(app, { manager, registry, recordEvent, al
         type: "gpu.clock.set",
         severity: "info",
         sparkId: spark.id,
-        message: `GPU clock capped at ${out.capMHz} MHz${out.persist ? " (kept after reboot)" : ""}`,
+        message: `GPU clock capped at ${out.capMHz} MHz${out.persist ? ` (kept after reboot${keptText(out.persistKind)})` : ""}`,
       });
       res.json({ success: true, ...out });
     })
@@ -133,16 +136,18 @@ export function registerGpuClockFleetRoute(app, { manager, registry, recordEvent
             sparkId: spark.id,
             message: "Fleet reset: GPU clock cap removed",
           });
-          results.push({ id: spark.id, ok: true, capMHz: null });
+          results.push({ id: spark.id, ok: true, capMHz: null, persistKind: "none" });
         } else {
           const out = await manager.apply(spark, { maxMHz, persist: persist === true });
           recordEvent({
             type: "gpu.clock.set",
             severity: "info",
             sparkId: spark.id,
-            message: `Fleet cap: GPU clock capped at ${out.capMHz} MHz${out.persist ? " (kept after reboot)" : ""}`,
+            message: `Fleet cap: GPU clock capped at ${out.capMHz} MHz${out.persist ? ` (kept after reboot${keptText(out.persistKind)})` : ""}`,
           });
-          results.push({ id: spark.id, ok: true, capMHz: out.capMHz });
+          // The hook is per unit — one Spark may take the service where another falls
+          // back to cron — so the report says which one took, not just that it persisted.
+          results.push({ id: spark.id, ok: true, capMHz: out.capMHz, persistKind: out.persistKind });
         }
       } catch (err) {
         // No NVIDIA GPU is a normal fleet answer; anything else — including a GPU
