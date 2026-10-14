@@ -20,8 +20,9 @@ import { GpuClockManager, assertSupported, remoteCommand } from "../GpuClockMana
 
 /** A temp tree with fake nvidia-smi, systemctl, sudo and crontab; the programs run
  * unprivileged against it. `narrowSudo` stands in for a unit whose only
- * passwordless rule is the narrow nvidia-smi one, `cron` for a running cron. */
-function sandbox({ hwMax = 3003, lgcFails = false, narrowSudo = false, cron = false } = {}) {
+ * passwordless rule is the narrow nvidia-smi one, `cron` for a running cron,
+ * `cronMangles` for a crontab tool that rewrites the clocks of what it stores. */
+function sandbox({ hwMax = 3003, lgcFails = false, narrowSudo = false, cron = false, cronMangles = false } = {}) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "gpuclock-"));
   const bin = path.join(root, "bin");
   fs.mkdirSync(bin);
@@ -95,7 +96,7 @@ case "$1" in
     [ -f ${path.join(root, "crontab.broken")} ] && { echo "crontab: cannot open spool" >&2; exit 1; }
     if [ -f ${crontab} ]; then cat ${crontab}; else echo "no crontab for $(id -un)" >&2; exit 1; fi ;;
   -r) [ -f ${crontab} ] || { echo "no crontab for $(id -un)" >&2; exit 1; }; rm -f ${crontab} ;;
-  *) cp "$1" ${crontab} ;;
+  *) ${cronMangles ? `sed 's/-lgc [0-9,]*/-lgc 0,9/' "$1" > ${crontab}` : `cp "$1" ${crontab}`} ;;
 esac
 `,
     { mode: 0o755 }
@@ -304,6 +305,19 @@ test("only Linux Spark units are supported", () => {
   assert.throws(() => assertSupported(undefined), (e) => e.status === 404);
   assertSupported({ id: "a", kind: "spark" });
   assertSupported({ id: "a", kind: "spark", platform: "linux" });
+});
+
+test("GpuClockManager: a cap not kept never names a hook; a kept one without a kind is the service", async () => {
+  const spark = { id: "s1", kind: "spark" };
+  const answering = (out) => new GpuClockManager({ run: async () => out });
+  // A stray kind on an apply that did not persist must not read as "kept by cron".
+  const notKept = await answering("RESULT=ok\nCAP=1800\nPERSIST=0\nPERSIST_KIND=cron").apply(spark, { maxMHz: 1800, persist: true });
+  assert.equal(notKept.persist, false);
+  assert.equal(notKept.persistKind, "none");
+  // An older unit program reports PERSIST=1 alone: only the service existed then.
+  const kindless = await answering("RESULT=ok\nCAP=1800\nPERSIST=1").apply(spark, { maxMHz: 1800, persist: true });
+  assert.equal(kindless.persist, true);
+  assert.equal(kindless.persistKind, "unit");
 });
 
 test("GpuClockManager: maps program errors to statuses, serialises per unit, hides ssh detail", async () => {
@@ -673,6 +687,59 @@ test("a crontab that cannot be read is never written back empty: apply and reset
   }
 });
 
+test("with root but neither systemd nor cron, keeping the cap is refused before anything is capped", () => {
+  const sb = sandbox();
+  try {
+    fs.rmSync(path.join(sb.root, "systemd"), { recursive: true });
+    const res = sb.run(buildApplyProgram({ minMHz: 0, maxMHz: 1800, persist: true }, sb.paths));
+    assert.equal(res.RESULT, "error");
+    assert.equal(res.CODE, "no-systemd");
+    assert.equal(sb.lockText(), null);
+    assert.doesNotMatch(sb.calls(), /-lgc 0,1800/);
+    assert.equal(sb.read(`units/${UNIT_NAME}`), null);
+    assert.equal(sb.cronText(), "");
+  } finally {
+    sb.cleanup();
+  }
+});
+
+test("with only the narrow rule, a leftover boot service blocks the @reboot job before anything is capped", () => {
+  const sb = sandbox({ narrowSudo: true, cron: true });
+  try {
+    const jobs = "0 4 * * * /usr/local/bin/backup.sh\n";
+    sb.write("crontab", jobs);
+    sb.write(`units/${UNIT_NAME}`, OLD_UNIT);
+    const res = sb.run(buildApplyProgram({ minMHz: 0, maxMHz: 1800, persist: true }, sb.paths));
+    assert.equal(res.RESULT, "error");
+    assert.equal(res.CODE, "service-failed");
+    assert.match(res.MSG, /NOPASSWD: ALL/);
+    assert.equal(sb.lockText(), null);
+    assert.doesNotMatch(sb.calls(), /-lgc 0,1800/);
+    assert.equal(sb.cronText(), jobs);
+    assert.equal(sb.read(`units/${UNIT_NAME}`), OLD_UNIT);
+  } finally {
+    sb.cleanup();
+  }
+});
+
+test("a crontab that stores the @reboot job with other clocks is reported as not installed and cleaned up", () => {
+  const sb = sandbox({ narrowSudo: true, cron: true, cronMangles: true });
+  try {
+    const jobs = "0 4 * * * /usr/local/bin/backup.sh\n";
+    sb.write("crontab", jobs);
+    const res = sb.run(buildApplyProgram({ minMHz: 0, maxMHz: 1800, persist: true }, sb.paths));
+    assert.equal(res.RESULT, "error");
+    assert.equal(res.CODE, "cron-failed");
+    assert.match(res.MSG, /did not install/);
+    // The message promises the cap holds until the next reboot: it does.
+    assert.equal(sb.lockText(), "0,1800");
+    assert.doesNotMatch(sb.cronText(), /sparkdash-gpu-clock-cap/);
+    assert.equal(sb.cronText(), jobs);
+  } finally {
+    sb.cleanup();
+  }
+});
+
 test("with root but no systemd, keeping the cap falls back to the @reboot job", () => {
   const sb = sandbox({ cron: true });
   try {
@@ -704,7 +771,8 @@ test("installing the boot service removes an @reboot job left from a narrower ru
   }
 });
 
-test("a dropped connection keeps the unit busy for a while, then frees it", async () => {
+test("a dropped connection keeps the unit busy for the hold time, then frees it", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
   let n = 0;
   const m = new GpuClockManager({
     holdMs: 60,
@@ -712,8 +780,9 @@ test("a dropped connection keeps the unit busy for a while, then frees it", asyn
   });
   const spark = { id: "s1", kind: "spark" };
   await assert.rejects(m.apply(spark, { maxMHz: 1800 }), (e) => e.status === 502);
+  t.mock.timers.tick(59);
   await assert.rejects(m.apply(spark, { maxMHz: 1800 }), (e) => e.status === 409);
-  await new Promise((r) => setTimeout(r, 90));
+  t.mock.timers.tick(1);
   assert.equal((await m.apply(spark, { maxMHz: 1800 })).capMHz, 1800);
 });
 

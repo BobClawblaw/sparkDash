@@ -39,7 +39,8 @@ const ready = (
   cron: { installed: false, clocks: null },
 });
 
-const done = (results: FleetGpuClockResult[]) => ({ success: true, results });
+/** What the fleet route answers: `success` only when every unit took the request. */
+const done = (results: FleetGpuClockResult[]) => ({ success: results.every((r) => r.ok), results });
 
 const byText = (c: HTMLElement, text: string) => {
   const button = [...c.querySelectorAll("button")].find((el) => el.textContent?.includes(text));
@@ -58,12 +59,27 @@ const click = async (el: HTMLElement) => {
   await settle();
 };
 
-/** Waits real time, for the per-unit read deadlines. */
+/**
+ * Runs out the per-unit read deadlines on fake timers: the fleet list, the first
+ * try and the retry each race their own deadline.
+ */
+const outwait = async (ms: number) => {
+  for (let i = 0; i < 3; i += 1) {
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(ms);
+    });
+    await settle();
+  }
+};
+
+/** A read that answers when the test says so. */
 // ES2022 target: `Promise.withResolvers` (ES2024) is not available here.
-const waitFor = async (ms: number) => {
-  await act(async () => {
-    await new Promise((resolve) => setTimeout(resolve, ms));
+const deferred = <T,>() => {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((res) => {
+    resolve = res;
   });
+  return { promise, resolve };
 };
 
 /** A read that never answers — a Spark behind a dead SSH connection. */
@@ -86,7 +102,10 @@ describe("FleetGpuClock", () => {
     setApi.mockReset();
     resetApi.mockReset();
   });
-  afterEach(() => cleanupRenders());
+  afterEach(() => {
+    cleanupRenders();
+    vi.useRealTimers();
+  });
 
   it("marks the cap every Spark shares, and a pick only selects until Save applies it", async () => {
     const ref = { current: null as FleetGpuClockApi | null };
@@ -236,7 +255,8 @@ describe("FleetGpuClock", () => {
   });
 
   it("says nothing changed when every unit refuses, names the reason once and the way out", async () => {
-    const refusal = "keeping the cap after reboot installs a system service, which needs passwordless sudo";
+    const refusal =
+      "keeping the cap after reboot needs passwordless sudo for the system service (NOPASSWD: ALL) or a running cron service for a @reboot job, and this unit offers neither";
     setApi.mockResolvedValue(done([
       { id: "spark1", ok: false, error: refusal },
       { id: "spark2", ok: false, error: refusal },
@@ -273,8 +293,9 @@ describe("FleetGpuClock", () => {
     statusApi.mockImplementation(() => hang());
     setApi.mockResolvedValue(done([{ id: "spark1", ok: true, capMHz: 1800, persistKind: "unit" }]));
     const ref = { current: null as FleetGpuClockApi | null };
+    vi.useFakeTimers();
     const { container } = render(<FleetGpuClock apiRef={ref} readTimeoutMs={20} />);
-    await waitFor(120);
+    await outwait(20);
     // Nothing read: unknown is not "refused", so the box stays available.
     expect((container.querySelector('input[type="checkbox"]') as HTMLInputElement).disabled).toBe(false);
   });
@@ -297,8 +318,9 @@ describe("FleetGpuClock", () => {
     statusApi.mockImplementation(async (id) =>
       id === "spark2" ? hang() : ready(2100),
     );
+    vi.useFakeTimers();
     const { container } = render(<FleetGpuClock readTimeoutMs={20} />);
-    await waitFor(120);
+    await outwait(20);
 
     expect(container.querySelector('[data-testid="fleet-now"]')!.textContent).toContain(
       "Now: capped at 2100 MHz on 1 unit, 1 unreadable",
@@ -308,12 +330,97 @@ describe("FleetGpuClock", () => {
 
   it("leaves the states usable, not 'Reading the fleet…', when every read hangs", async () => {
     statusApi.mockImplementation(() => hang());
+    vi.useFakeTimers();
     const { container } = render(<FleetGpuClock readTimeoutMs={20} />);
-    await waitFor(160);
+    await outwait(20);
 
     expect(byText(container, "2400 MHz").disabled).toBe(false);
     expect(container.querySelector('[data-testid="fleet-now"]')!.textContent).toContain(
       "No unit reports its clock right now",
     );
+  });
+
+  it("keeps an unticked Keep after reboot unticked when the fleet is read again after an apply", async () => {
+    setApi.mockResolvedValue(done([
+      { id: "spark1", ok: true, capMHz: 1800, persistKind: "none" },
+      { id: "spark2", ok: true, capMHz: 1800, persistKind: "none" },
+    ]));
+    const ref = { current: null as FleetGpuClockApi | null };
+    const { container } = render(<FleetGpuClock apiRef={ref} />);
+    await settle();
+    const box = container.querySelector('input[type="checkbox"]') as HTMLInputElement;
+    expect(box.checked).toBe(true);
+
+    await click(box);
+    expect(box.checked).toBe(false);
+    await click(byText(container, "1800 MHz"));
+    statusApi.mockResolvedValue(ready(1800));
+    expect(await applyPicked(ref)).toBe(true);
+    expect(setApi).toHaveBeenLastCalledWith(1800, false);
+
+    // The read after the apply finds every unit able to keep a cap again; the
+    // user's choice still stands, or the next Save would install boot hooks.
+    expect(container.querySelector('[data-testid="fleet-now"]')!.textContent).toContain("Now: capped at 1800 MHz on 2 units");
+    expect(box.checked).toBe(false);
+
+    await click(byText(container, "1900 MHz"));
+    expect(await applyPicked(ref)).toBe(true);
+    expect(setApi).toHaveBeenLastCalledWith(1900, false);
+  });
+
+  it("keeps the pick and reports an error when only some units take the cap", async () => {
+    statusApi.mockResolvedValue(ready(2100, "cron"));
+    setApi.mockResolvedValue(done([
+      { id: "spark1", ok: true, capMHz: 1800, persistKind: "cron" },
+      { id: "spark2", ok: false, error: "nvidia-smi -lgc failed" },
+    ]));
+    const ref = { current: null as FleetGpuClockApi | null };
+    const { container } = render(<FleetGpuClock apiRef={ref} />);
+    await settle();
+
+    await click(byText(container, "1800 MHz"));
+    expect(await applyPicked(ref)).toBe(false);
+
+    const msg = status(container)!;
+    expect(msg.textContent).toContain("Capped at 1800 MHz — 1 of 2 units — kept by an @reboot cron job on each unit");
+    expect(msg.textContent).toContain("spark2: nvidia-smi -lgc failed");
+    expect(msg.textContent).not.toContain("spark1:");
+    // Not the boot-hook refusal, so no advice to untick the box.
+    expect(msg.textContent).not.toContain("Untick");
+    expect(msg.className).toContain("is-err");
+    // spark2 never took it: the pick stays for Save to retry.
+    expect(ref.current!.pending()).toBe(true);
+    expect(byText(container, "1800 MHz").className).toContain("is-picked");
+  });
+
+  it("ignores a slow read from before the apply that answers after the read that follows it", async () => {
+    const slow = deferred<GpuClockStatus>();
+    const asked = new Set<string>();
+    // Each unit's first read (from opening the row) stalls; later reads answer at once.
+    statusApi.mockImplementation(async (id) => {
+      if (asked.has(id)) return ready(1800);
+      asked.add(id);
+      return slow.promise;
+    });
+    setApi.mockResolvedValue(done([
+      { id: "spark1", ok: true, capMHz: 1800, persistKind: "unit" },
+      { id: "spark2", ok: true, capMHz: 1800, persistKind: "unit" },
+    ]));
+    const ref = { current: null as FleetGpuClockApi | null };
+    const { container } = render(<FleetGpuClock apiRef={ref} />);
+    await settle();
+    const now = container.querySelector('[data-testid="fleet-now"]')!;
+    expect(now.textContent).toContain("Reading the fleet");
+
+    await click(byText(container, "1800 MHz"));
+    expect(await applyPicked(ref)).toBe(true);
+    expect(now.textContent).toContain("Now: capped at 1800 MHz on 2 units");
+
+    await act(async () => slow.resolve(ready(2400)));
+    await settle();
+
+    expect(now.textContent).toContain("Now: capped at 1800 MHz on 2 units");
+    expect(byText(container, "1800 MHz").className).toContain("is-current");
+    expect(byText(container, "2400 MHz").className).not.toContain("is-current");
   });
 });

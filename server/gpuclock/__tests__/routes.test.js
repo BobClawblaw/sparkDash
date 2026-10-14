@@ -84,6 +84,7 @@ test("an unreachable unit is a 502 that does not echo ssh internals beyond a sho
 test("a failure on the unit reaches the browser with its own message, not a generic 500", async () => {
   const cases = [
     ["lgc-failed", "nvidia-smi refused the clock cap: not supported", 422],
+    ["no-systemd", "keeping the cap after reboot needs systemd or a running cron service, and this unit has neither", 409],
     ["service-failed", "the service did not start; the cap applies until the next reboot", 422],
     ["rgc-failed", "nvidia-smi could not reset the clocks", 422],
     ["marker-failed", "could not record the cap", 422],

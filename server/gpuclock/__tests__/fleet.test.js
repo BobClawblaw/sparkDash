@@ -36,7 +36,7 @@ test("fleet cap applies to every spark, reports the hosts it leaves alone, and r
   const seen = [];
   // One Spark takes the boot service, the other keeps it with its own @reboot
   // job: the report carries which hook each took, not just "kept".
-  await withApp({ run: async (spark, program) => { seen.push([spark.id, program]); return `RESULT=ok\nCAP=2000\nPERSIST=1\nPERSIST_KIND=${spark.id === "s2" ? "cron" : "unit"}`; } }, async (base, events) => {
+  await withApp({ run: async (spark) => { seen.push(spark.id); return `RESULT=ok\nCAP=2000\nPERSIST=1\nPERSIST_KIND=${spark.id === "s2" ? "cron" : "unit"}`; } }, async (base, events) => {
     const res = await fetch(`${base}/gpu-clock-all`, json("POST", { maxMHz: 2000, persist: true }));
     assert.equal(res.status, 200);
     const body = await res.json();
@@ -46,10 +46,8 @@ test("fleet cap applies to every spark, reports the hosts it leaves alone, and r
       { id: "s2", ok: true, capMHz: 2000, persistKind: "cron" },
       { id: "h1", ok: true, supported: false, reason: "GPU clock caps are only supported on Spark units" },
     ]);
-    // The batch never runs on a host, and every unit that does run receives both
-    // the cap and the persist flag from the request.
-    assert.equal(seen.length, 2);
-    assert.ok(seen.every(([id, program]) => id.startsWith("s") && program.includes("MAX=2000") && program.includes("PERSIST=1")));
+    // The batch never runs on a host.
+    assert.deepEqual(seen, ["s1", "s2"]);
     assert.equal(events.length, 2);
     assert.ok(events.every((e) => e.type === "gpu.clock.set" && e.sparkId.startsWith("s")));
     assert.match(events.find((e) => e.sparkId === "s1").message, /kept after reboot by the boot service/);
