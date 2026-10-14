@@ -73,9 +73,20 @@ export function FleetGpuClock({
     }
   }, [readTimeoutMs]);
 
+  /** Only the newest read may write state: a slow pre-apply read must not overwrite a fresh one. */
+  const latest = useRef(0);
+  useEffect(
+    () => () => {
+      latest.current += 1;
+    },
+    [],
+  );
+
   const read = useCallback(async () => {
+    const mine = ++latest.current;
     try {
       const res = await Promise.race([fetchSparks(), afterNull(readTimeoutMs)]);
+      if (mine !== latest.current) return;
       if (!res) {
         setNow({ kind: "unknown" });
         return;
@@ -90,6 +101,7 @@ export function FleetGpuClock({
       retried.forEach((status, i) => {
         if (status) statuses[i] = status;
       });
+      if (mine !== latest.current) return;
 
       const ready = statuses.filter((status): status is ReadyStatus => Boolean(status?.supported));
       const caps = ready.map((status) => status.capMHz);
@@ -112,6 +124,7 @@ export function FleetGpuClock({
           : { kind: "mixed", caps, unreadable },
       );
     } catch {
+      if (mine !== latest.current) return;
       setNow({ kind: "unknown" });
     }
   }, [readUnit, readTimeoutMs]);
@@ -157,7 +170,8 @@ export function FleetGpuClock({
       ].join("; ");
       // Which hook took, per unit: one Spark may take the boot service where another
       // falls back to cron, and "kept after reboot" alone hides that.
-      const kept = persist
+      // Removing the cap keeps nothing, whatever the tick says.
+      const kept = persist && capMHz !== null
         ? res.results.flatMap((r) => (r.ok && "persistKind" in r ? [r.persistKind] : []))
         : [];
       const howKept =

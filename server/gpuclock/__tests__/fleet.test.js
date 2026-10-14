@@ -91,6 +91,8 @@ test("a unit without a GPU is a normal result, other failures are per-unit error
   await withApp({ run }, async (base) => {
     const res = await fetch(`${base}/gpu-clock-all`, json("POST", { maxMHz: 1800 }));
     const body = await res.json();
+    // A skipped unit does not make the batch unsuccessful.
+    assert.equal(body.success, true);
     assert.equal(body.results[0].ok, true);
     assert.equal(body.results[0].supported, false);
     assert.equal(body.results[1].ok, true);
@@ -117,6 +119,8 @@ test("a unit without a GPU is a normal result, other failures are per-unit error
     const res = await fetch(`${base}/gpu-clock-all`, json("POST", { maxMHz: 1800 }));
     const body = await res.json();
     assert.ok(body.results.filter((r) => r.id !== "h1").every((r) => r.ok === false && r.error));
+    // Every unit failing is not a successful batch for an API client.
+    assert.equal(body.success, false);
   });
 });
 

@@ -158,6 +158,8 @@ describe("FleetGpuClock", () => {
     expect(resetApi).toHaveBeenCalled();
     expect(setApi).not.toHaveBeenCalled();
     expect(status(container)!.textContent).toContain("Full capacity — 2 of 2 units");
+    // The tick defaulted on (every unit can keep a cap), but removing the cap keeps nothing.
+    expect(status(container)!.textContent).not.toContain("kept");
   });
 
   it("reports a unit that cannot take a cap as skipped, not as an error", async () => {

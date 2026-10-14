@@ -159,6 +159,7 @@ export function registerGpuClockFleetRoute(app, { manager, registry, recordEvent
         }
       }
     }
-    res.json({ success: true, results });
+    // Skipped units (no GPU) are ok results; any real failure makes the batch unsuccessful.
+    res.json({ success: results.every((r) => r.ok), results });
   });
 }

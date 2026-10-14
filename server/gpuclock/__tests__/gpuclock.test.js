@@ -89,8 +89,12 @@ exit 1
     `#!/bin/sh
 echo "crontab $*" >> ${calls}
 case "$1" in
-  -l) [ -f ${crontab} ] && cat ${crontab} ;;
-  -r) rm -f ${crontab} ;;
+  -l)
+    # A read that fails for another reason (lock, spool, PAM): like the real
+    # tool, it exits non-zero with something other than "no crontab for".
+    [ -f ${path.join(root, "crontab.broken")} ] && { echo "crontab: cannot open spool" >&2; exit 1; }
+    if [ -f ${crontab} ]; then cat ${crontab}; else echo "no crontab for $(id -un)" >&2; exit 1; fi ;;
+  -r) [ -f ${crontab} ] || { echo "no crontab for $(id -un)" >&2; exit 1; }; rm -f ${crontab} ;;
   *) cp "$1" ${crontab} ;;
 esac
 `,
@@ -647,6 +651,56 @@ test("status names the boot hook the unit can take: the service with root, cron 
   } finally {
     root.cleanup();
     narrow.cleanup();
+  }
+});
+
+test("a crontab that cannot be read is never written back empty: apply and reset refuse first", () => {
+  const sb = sandbox({ narrowSudo: true, cron: true });
+  try {
+    const jobs = "0 4 * * * /usr/local/bin/backup.sh\n";
+    sb.write("crontab", jobs);
+    sb.write("crontab.broken", "");
+    for (const persist of [true, false]) {
+      const res = sb.run(buildApplyProgram({ minMHz: 0, maxMHz: 1800, persist }, sb.paths));
+      assert.equal(res.CODE, "cron-failed");
+      assert.equal(sb.lockText(), null, "nothing is capped before the crontab is known");
+    }
+    assert.equal(sb.run(buildResetProgram(sb.paths)).CODE, "cron-failed");
+    assert.equal(sb.cronText(), jobs);
+    assert.doesNotMatch(sb.calls(), /crontab (-r|\/)/);
+  } finally {
+    sb.cleanup();
+  }
+});
+
+test("with root but no systemd, keeping the cap falls back to the @reboot job", () => {
+  const sb = sandbox({ cron: true });
+  try {
+    fs.rmSync(path.join(sb.root, "systemd"), { recursive: true });
+    assert.equal(sb.run(buildStatusProgram(sb.paths)).PERSIST_KIND, "cron");
+    const res = sb.run(buildApplyProgram({ minMHz: 0, maxMHz: 1800, persist: true }, sb.paths));
+    assert.equal(res.RESULT, "ok");
+    assert.equal(res.PERSIST_KIND, "cron");
+    assert.match(sb.cronText(), /-lgc 0,1800/);
+    assert.equal(sb.read(`units/${UNIT_NAME}`), null);
+  } finally {
+    sb.cleanup();
+  }
+});
+
+test("installing the boot service removes an @reboot job left from a narrower rule", () => {
+  const sb = sandbox({ narrowSudo: true, cron: true });
+  try {
+    sb.write("crontab", "0 4 * * * /usr/local/bin/backup.sh\n");
+    sb.run(buildApplyProgram({ minMHz: 0, maxMHz: 1800, persist: true }, sb.paths));
+    // The fleet is granted NOPASSWD: ALL: the next keep-after-reboot takes the service.
+    const res = sb.run(buildApplyProgram({ minMHz: 0, maxMHz: 2000, persist: true }, { ...sb.paths, sandboxSudo: "" }));
+    assert.equal(res.RESULT, "ok");
+    assert.equal(res.PERSIST_KIND, "unit");
+    assert.match(sb.read(`units/${UNIT_NAME}`), /-lgc 0,2000/);
+    assert.equal(sb.cronText(), "0 4 * * * /usr/local/bin/backup.sh\n");
+  } finally {
+    sb.cleanup();
   }
 });
 
