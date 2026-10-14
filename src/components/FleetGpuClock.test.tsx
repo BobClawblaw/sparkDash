@@ -1,3 +1,4 @@
+import { act } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { fetchGpuClock, fetchSparks, resetFleetGpuClock, setFleetGpuClock } from "../api/client";
 import type { FleetGpuClockResult, GpuClockStatus, SparkConfig } from "../api/types";
@@ -171,5 +172,45 @@ describe("FleetGpuClock", () => {
     const msg = status(container)!;
     expect(msg.textContent).toContain("Too many GPU clock changes");
     expect(msg.className).toContain("is-err");
+  });
+
+  it("marks what the units that answered report when one read hangs, and counts the other", async () => {
+    vi.useFakeTimers();
+    try {
+      // A Spark behind a dead SSH connection answers nothing, ever.
+      statusApi.mockImplementation((id: string) =>
+        id === "spark2" ? new Promise<GpuClockStatus>(() => {}) : Promise.resolve(ready(2100)),
+      );
+      const { container } = render(<FleetGpuClock />);
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(6000);
+      });
+
+      const line = container.querySelector('[data-testid="fleet-now"]')!.textContent;
+      expect(line).toContain("capped at 2100 MHz on 1 unit");
+      expect(line).toContain("1 unreadable");
+      expect(byText(container, "2100 MHz").className).toContain("is-current");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("leaves the states usable, not 'Reading the fleet…', when every read hangs", async () => {
+    vi.useFakeTimers();
+    try {
+      statusApi.mockImplementation(() => new Promise<GpuClockStatus>(() => {}));
+      const { container } = render(<FleetGpuClock />);
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(6000);
+      });
+
+      const line = container.querySelector('[data-testid="fleet-now"]')!.textContent;
+      expect(line).toContain("No unit reports its clock right now");
+      expect(byText(container, "Full capacity")).toBeTruthy();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

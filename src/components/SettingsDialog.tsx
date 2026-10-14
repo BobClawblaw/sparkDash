@@ -487,7 +487,7 @@ export function SettingsDialog({ open, onClose, onSaved }: SettingsDialogProps) 
           {/* Outside the settings block: a fleet GPU action needs no saved settings. */}
           <SettingRow
             title="GPU clock cap"
-            help="Caps the GPU graphics clock on every Spark at once (nvidia-smi -lgc). Offline or GPU-less units are skipped and reported. Remove cap clears it everywhere."
+            help="Caps the GPU graphics clock on every Spark at once (nvidia-smi -lgc): pick the state they should be in — Full capacity or 1800–2400 MHz. Offline or GPU-less units are skipped and reported."
             stack
           >
             <FleetGpuClock />
