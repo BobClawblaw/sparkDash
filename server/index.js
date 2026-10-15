@@ -2311,6 +2311,11 @@ function broadcastPayload(payload) {
   });
 }
 
+/** Fleet entries with per-domain provenance, exactly what /metrics renders. */
+function mqttFleetEntries() {
+  return metricsEntries(registry.sparkIds.map((id) => monitors.get(id)));
+}
+
 /**
  * Broadcast now instead of on the next tick.
  * Used after a user action (manual refresh / hermes check / update) so the
@@ -2318,7 +2323,7 @@ function broadcastPayload(payload) {
  */
 function forceBroadcast() {
   broadcastPayload(buildSnapshotPayload());
-  mqttPublisher.publishSnapshots(orderedSnapshots());
+  mqttPublisher.publishFleet(mqttFleetEntries());
 }
 
 function startBroadcast() {
@@ -2330,7 +2335,7 @@ function startBroadcast() {
     // or not a dashboard is open.
     alertsRuntime.tick(sparks);
     // MQTT subscribers are not dashboards, so publish before the no-client skip below.
-    mqttPublisher.publishSnapshots(sparks);
+    mqttPublisher.publishFleet(mqttFleetEntries());
     // Nobody is listening: skip serialising every unit's snapshot. A client that
     // connects later gets a fresh one from the connection handler.
     if (wss.clients.size === 0) return;
