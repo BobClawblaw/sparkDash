@@ -21,6 +21,7 @@ import {
 import { authStatus, authorizeUpgrade, createAuthMiddleware, createHostGuardMiddleware, isLoopbackBind, setTailscaleName } from "./auth.js";
 import { inspectHealth } from "./health.js";
 import { getSettings, updateSettings, loadSettings } from "./settings.js";
+import { MqttPublisher } from "./mqtt/MqttPublisher.js";
 import { broadcastForLanIp, effectiveMac, normalizeMac, sendWol } from "./wol.js";
 import { remoteShutdownCommand, spawnLocalShutdown } from "./shutdown.js";
 import { GpuClockManager } from "./gpuclock/GpuClockManager.js";
@@ -305,6 +306,13 @@ const eventLog = new EventLog({
   // The Activity page browses history, so keep far more than the Overview card shows.
   max: 2000,
 });
+
+// ─── MQTT bridge (opt-in, Settings → MQTT) ───────────────
+// Republishes the event stream and per-Spark availability to a broker the
+// user configures. Best-effort: a down broker drops messages rather than
+// ever blocking a poll loop (the client retries on its own in the meantime).
+const mqttPublisher = new MqttPublisher({ getSettings });
+eventLog.subscribe((event) => mqttPublisher.publishEvent(event));
 
 // ─── Unit history (so a fresh page can draw the last hours at once) ─────
 // GPU: a dense ~2 s series for 8 h (Overview/Spark charts) and a minute-resolution series for
@@ -749,6 +757,8 @@ app.put("/api/settings", (req, res) => {
       }
       restartBroadcast();
     }
+    // MQTT broker URL / prefix / enablement changed: reconnect (a no-op otherwise).
+    mqttPublisher.applySettings();
     res.json({ ...newSettings, inferenceActivityEnabled: inferenceActivity.enabled });
   } catch (err) {
     res.status(400).json({ error: err.message });
@@ -2308,6 +2318,7 @@ function broadcastPayload(payload) {
  */
 function forceBroadcast() {
   broadcastPayload(buildSnapshotPayload());
+  mqttPublisher.publishSnapshots(orderedSnapshots());
 }
 
 function startBroadcast() {
@@ -2318,6 +2329,8 @@ function startBroadcast() {
     // payload carries the alerts this very snapshot produced. They run whether
     // or not a dashboard is open.
     alertsRuntime.tick(sparks);
+    // MQTT subscribers are not dashboards, so publish before the no-client skip below.
+    mqttPublisher.publishSnapshots(sparks);
     // Nobody is listening: skip serialising every unit's snapshot. A client that
     // connects later gets a fresh one from the connection handler.
     if (wss.clients.size === 0) return;
@@ -2337,6 +2350,7 @@ function restartBroadcast() {
 
 // ─── Start ───────────────────────────────────────────────
 loadSettings();
+mqttPublisher.applySettings();
 const startupPreflight = inspectStartupPreflight(BIND_HOST);
 logStartupPreflight(startupPreflight, BIND_HOST, PORT);
 
@@ -2409,6 +2423,11 @@ async function shutdown(signal) {
     eventLog.flush();
   } catch (err) {
     console.error("[sparkDash] failed to flush event log:", err.message);
+  }
+  try {
+    mqttPublisher.stop();
+  } catch (err) {
+    console.error("[sparkDash] failed to stop MQTT publisher:", err.message);
   }
   try {
     unitHistoryRuntime.stop();

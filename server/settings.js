@@ -80,6 +80,18 @@ const DEFAULTS = Object.freeze({
    * is evaluated or sent, and the alert config / test routes refuse.
    */
   alertsEnabled: false,
+  /**
+   * Publish the EventLog stream and per-Spark availability to an MQTT broker.
+   * Off by default. The broker password never lives here (settings.json is
+   * world-readable) — it comes from the SPARKDASH_MQTT_PASSWORD env var.
+   */
+  mqttEnabled: false,
+  /** Broker URL: mqtt://host:port, mqtts://… or ws(s)://… */
+  mqttUrl: "",
+  /** Username the broker requires, if any. */
+  mqttUsername: "",
+  /** Topic root for everything published (no wildcards, no slashes at the edges). */
+  mqttTopicPrefix: "sparkdash",
 });
 
 const POLL_INTERVAL_MIN_MS = 500;
@@ -96,6 +108,20 @@ export function isValidTimeZone(value) {
   } catch {
     return false;
   }
+}
+
+/** A usable MQTT topic root: no wildcards, no slashes at the edges, bounded length. */
+function isValidMqttPrefix(value) {
+  if (typeof value !== "string") return false;
+  const v = value.trim();
+  return (
+    v.length > 0 &&
+    v.length <= 128 &&
+    !v.includes("+") &&
+    !v.includes("#") &&
+    !v.startsWith("/") &&
+    !v.endsWith("/")
+  );
 }
 
 /** Keep only known setting keys. */
@@ -149,6 +175,13 @@ function _clampSettings(settings) {
   s.intelVramSudo = Boolean(s.intelVramSudo);
   s.metricsHistory = Boolean(s.metricsHistory);
   s.alertsEnabled = Boolean(s.alertsEnabled);
+  s.mqttEnabled = Boolean(s.mqttEnabled);
+  s.mqttUrl =
+    typeof s.mqttUrl === "string" && /^(mqtt|ws)s?:\/\//.test(s.mqttUrl.trim()) && s.mqttUrl.trim().length <= 256
+      ? s.mqttUrl.trim()
+      : "";
+  s.mqttUsername = typeof s.mqttUsername === "string" ? s.mqttUsername.trim().slice(0, 128) : "";
+  s.mqttTopicPrefix = isValidMqttPrefix(s.mqttTopicPrefix) ? s.mqttTopicPrefix.trim() : DEFAULTS.mqttTopicPrefix;
   // Ensure temperatureUnit is valid
   if (s.temperatureUnit !== "celsius" && s.temperatureUnit !== "fahrenheit") {
     s.temperatureUnit = DEFAULTS.temperatureUnit;
