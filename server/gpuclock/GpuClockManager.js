@@ -217,6 +217,8 @@ export class GpuClockManager {
       cron: {
         installed: res.CRON_INSTALLED === "1",
         clocks: clocks(res.CRON_CLOCKS),
+        /** The @reboot job ran at this boot and could not re-apply the cap. */
+        failed: res.CRON_FAILED === "1",
       },
     };
   }

@@ -36,11 +36,15 @@ const ready = (
   sudo: "yes",
   persistKind,
   service: { installed: false, clocks: null, enabled: null, active: null },
-  cron: { installed: false, clocks: null },
+  cron: { installed: false, clocks: null, failed: false },
 });
 
 /** What the fleet route answers: `success` only when every unit took the request. */
-const done = (results: FleetGpuClockResult[]) => ({ success: results.every((r) => r.ok), results });
+const done = (results: FleetGpuClockResult[]) => ({
+  success: results.every((r) => r.ok) && results.some((r) => r.ok && !("supported" in r)),
+  applied: results.filter((r) => r.ok && !("supported" in r)).length,
+  results,
+});
 
 const byText = (c: HTMLElement, text: string) => {
   const button = [...c.querySelectorAll("button")].find((el) => el.textContent?.includes(text));
@@ -196,6 +200,27 @@ describe("FleetGpuClock", () => {
     const msg = status(container)!;
     expect(msg.textContent).toContain("1 of 2 units, 1 skipped");
     expect(msg.className).not.toContain("is-err");
+  });
+
+  it("does not call a fleet where every unit was skipped a success, and keeps the pick", async () => {
+    setApi.mockResolvedValue(done([
+      { id: "spark1", ok: true, supported: false, reason: "nvidia-smi was not found on this unit" },
+      { id: "spark2", ok: true, supported: false, reason: "nvidia-smi was not found on this unit" },
+    ]));
+    const ref = { current: null as FleetGpuClockApi | null };
+    const { container } = render(<FleetGpuClock apiRef={ref} />);
+    await settle();
+
+    await click(byText(container, "1800 MHz"));
+    const ok = await applyPicked(ref);
+
+    const msg = status(container)!;
+    expect(ok).toBe(false);
+    expect(msg.textContent).toContain("Nothing changed — 0 of 2 units capped, 2 skipped");
+    expect(msg.textContent).not.toContain("Capped at");
+    expect(msg.className).toContain("is-err");
+    // Nothing was capped, so the pick is still pending rather than silently spent.
+    expect(ref.current!.pending()).toBe(true);
   });
 
   it("defaults Keep after reboot off when no unit has a boot hook to use", async () => {

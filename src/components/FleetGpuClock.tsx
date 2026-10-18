@@ -182,23 +182,24 @@ export function FleetGpuClock({
             : kept.some((k) => k === "cron")
               ? " — kept after reboot (boot service or @reboot job, per unit)"
               : " — kept after reboot";
+      // A skipped unit is not a failure, but it is not a change either: a fleet where
+      // nothing was capped must not read as a success.
+      const nothingChanged = capped === 0;
       setMsg({
-        // A skipped unit is not a failure: it never had a clock to cap.
-        ok: failed.length === 0,
-        text:
-          capped === 0 && failed.length > 0
-            ? `Nothing changed — 0 of ${res.results.length} units ${
-                capMHz === null ? "unlocked" : "capped"
-              }`
-            : `${capMHz === null ? "Full capacity" : `Capped at ${capMHz} MHz`} — ${capped} of ${
-                res.results.length
-              } units${skipped.length ? `, ${skipped.length} skipped` : ""}${howKept}`,
+        ok: failed.length === 0 && !nothingChanged,
+        text: nothingChanged
+          ? `Nothing changed — 0 of ${res.results.length} units ${capMHz === null ? "unlocked" : "capped"}${
+              skipped.length ? `, ${skipped.length} skipped` : ""
+            }`
+          : `${capMHz === null ? "Full capacity" : `Capped at ${capMHz} MHz`} — ${capped} of ${
+              res.results.length
+            } units${skipped.length ? `, ${skipped.length} skipped` : ""}${howKept}`,
         detail: detail || undefined,
       });
-      // The pick is spent once every unit took it (skips are not failures).
-      if (failed.length === 0) setPicked(undefined);
+      // The pick is spent once every unit took it (skips are not failures) and at least one did.
+      if (failed.length === 0 && !nothingChanged) setPicked(undefined);
       void read();
-      return failed.length === 0;
+      return failed.length === 0 && !nothingChanged;
     } catch (err: unknown) {
       setMsg({
         ok: false,

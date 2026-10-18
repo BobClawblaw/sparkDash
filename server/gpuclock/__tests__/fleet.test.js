@@ -4,7 +4,7 @@ import express from "express";
 import { registerGpuClockFleetRoute } from "../routes.js";
 import { GpuClockManager } from "../GpuClockManager.js";
 
-async function withApp({ run, allow = () => true }, fn) {
+async function withApp({ run, allow = () => true, fleetDeadlineMs }, fn) {
   const events = [];
   const app = express();
   app.use(express.json());
@@ -20,6 +20,7 @@ async function withApp({ run, allow = () => true }, fn) {
     recordEvent: (e) => events.push(e),
     allowChange: allow,
     rejectLimited: (res, message) => res.status(429).json({ error: message }),
+    ...(fleetDeadlineMs === undefined ? {} : { fleetDeadlineMs }),
   });
   const server = await new Promise((r) => { const s = app.listen(0, "127.0.0.1", () => r(s)); });
   const base = `http://127.0.0.1:${server.address().port}/api/sparks`;
@@ -91,6 +92,7 @@ test("a unit without a GPU is a normal result, other failures are per-unit error
     const body = await res.json();
     // A skipped unit does not make the batch unsuccessful.
     assert.equal(body.success, true);
+    assert.equal(body.applied, 1);
     assert.equal(body.results[0].ok, true);
     assert.equal(body.results[0].supported, false);
     assert.equal(body.results[1].ok, true);
@@ -119,6 +121,39 @@ test("a unit without a GPU is a normal result, other failures are per-unit error
     assert.ok(body.results.filter((r) => r.id !== "h1").every((r) => r.ok === false && r.error));
     // Every unit failing is not a successful batch for an API client.
     assert.equal(body.success, false);
+  });
+});
+
+test("a fleet where every unit was skipped changed nothing, so it is not a success", async () => {
+  const run = async () => "RESULT=error\nCODE=no-nvidia\nMSG=nvidia-smi was not found on this unit";
+  await withApp({ run }, async (base) => {
+    for (const body of [{ maxMHz: 1800 }, { reset: true }]) {
+      const res = await fetch(`${base}/gpu-clock-all`, json("POST", body));
+      const out = await res.json();
+      assert.equal(res.status, 200);
+      assert.equal(out.applied, 0, JSON.stringify(body));
+      assert.equal(out.success, false, JSON.stringify(body));
+      assert.ok(out.results.every((r) => r.ok && r.supported === false));
+    }
+  });
+});
+
+test("past the fleet deadline the remaining units are reported as not attempted, not waited for", async () => {
+  const seen = [];
+  const run = async (spark) => {
+    seen.push(spark.id);
+    await new Promise((r) => setTimeout(r, 40));
+    return "RESULT=ok\nCAP=1800\nPERSIST=0";
+  };
+  await withApp({ run, fleetDeadlineMs: 10 }, async (base) => {
+    const body = await (await fetch(`${base}/gpu-clock-all`, json("POST", { maxMHz: 1800 }))).json();
+    assert.deepEqual(seen, ["s1"], "only the unit started before the deadline ran");
+    assert.equal(body.results[0].ok, true);
+    assert.equal(body.results[1].id, "s2");
+    assert.equal(body.results[1].ok, false);
+    assert.match(body.results[1].error, /Not attempted/);
+    assert.equal(body.applied, 1);
+    assert.equal(body.success, false, "a unit that was never reached is a failure");
   });
 });
 

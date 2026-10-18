@@ -237,6 +237,8 @@ export type GpuClockStatus =
         installed: boolean;
         /** "min,max" the @reboot job applies at boot. */
         clocks: string | null;
+        /** The job ran at this boot and could not re-apply the cap. */
+        failed: boolean;
       };
     };
 
@@ -446,7 +448,7 @@ export interface LlmMetrics {
   /** The LLM port this snapshot came from — lets the UI match panels to probes by port, not array position. */
   port?: number;
   available: boolean;
-  backend: "vllm" | "llama.cpp" | "sglang" | "lmstudio" | "ollama" | "ds4" | "exl3" | "q27" | "tensorfold" | "freetoken" | null;
+  backend: "vllm" | "llama.cpp" | "sglang" | "lmstudio" | "ollama" | "ds4" | "exl3" | "q27" | "tensorfold" | "freetoken" | "radiance" | "strata" | null;
   /** How the monitor reaches the engine: its own address, or an SSH forward when only SSH gets there. */
   via?: "direct" | "ssh-tunnel";
   modelId: string | null;
@@ -460,9 +462,13 @@ export interface LlmMetrics {
   slotsActive: number | null;
   slotsTotal: number;
   generationTps: number;
+  /** How generationTps was measured when a backend exposes a fallback. */
+  generationTpsSource?: "window" | "slot-mean" | null;
   prefillTps: number;
   /** A prompt is being processed right now. With no live rate available (TensorFold reports totals only for finished requests) the UI says "prefilling" instead of 0. */
   prefillActive?: boolean;
+  /** A request is generating right now, even when the backend has no live rate. */
+  decodeActive?: boolean;
   /** Live cached-prefill tok/s when the backend splits kinds (ds4, llama.cpp, sglang). */
   cachedPrefillTps?: number | null;
   /** Live uncached/computed prefill tok/s when split is available. */

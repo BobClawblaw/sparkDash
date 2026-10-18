@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { fetchGpuClock, fetchGpuClockCommand, resetGpuClock, setGpuClock } from "../api/client";
 import type { GpuClockStatus } from "../api/types";
 import { GpuClockSection } from "./GpuClockSection";
-import { flush, render } from "../testing/render";
+import { cleanupRenders, flush, render } from "../testing/render";
 
 vi.mock("../api/client", () => ({
   fetchGpuClock: vi.fn(),
@@ -19,7 +19,7 @@ const base: GpuClockStatus = {
   sudo: "yes",
   persistKind: "unit",
   service: { installed: false, clocks: null, enabled: null, active: null },
-  cron: { installed: false, clocks: null },
+  cron: { installed: false, clocks: null, failed: false },
 };
 
 const buttons = (c: HTMLElement) => [...c.querySelectorAll("button")];
@@ -96,7 +96,7 @@ describe("GpuClockSection", () => {
       ...base,
       persistKind: "cron",
       capMHz: 1800,
-      cron: { installed: true, clocks: "0,1800" },
+      cron: { installed: true, clocks: "0,1800", failed: false },
     });
     vi.mocked(setGpuClock).mockResolvedValue({
       success: true,
@@ -119,6 +119,28 @@ describe("GpuClockSection", () => {
     await flush();
     expect(setGpuClock).toHaveBeenCalledWith("lab", { maxMHz: 1800, persist: true });
     expect(container.textContent).toContain("kept after reboot by an @reboot cron job");
+  });
+
+  it("warns when the @reboot job ran at this boot and could not re-apply the cap", async () => {
+    const failedStatus = (failed: boolean): GpuClockStatus => ({
+      ...(base as Extract<GpuClockStatus, { supported: true }>),
+      persistKind: "cron",
+      capMHz: null,
+      cron: { installed: true, clocks: "0,1800", failed },
+    });
+    vi.mocked(fetchGpuClock).mockResolvedValue(failedStatus(true));
+    const { container } = render(<GpuClockSection sparkId="lab" />);
+    await flush();
+    const warning = container.querySelector('[data-testid="gpu-clock-boot-failed"]');
+    expect(warning).not.toBeNull();
+    expect(warning!.textContent).toContain("could not re-apply the cap");
+    cleanupRenders();
+
+    // A job that ran fine shows nothing.
+    vi.mocked(fetchGpuClock).mockResolvedValue(failedStatus(false));
+    const ok = render(<GpuClockSection sparkId="lab" />);
+    await flush();
+    expect(ok.container.querySelector('[data-testid="gpu-clock-boot-failed"]')).toBeNull();
   });
 
   it("offers nothing to keep when the unit has no hook, and says so instead of refusing", async () => {

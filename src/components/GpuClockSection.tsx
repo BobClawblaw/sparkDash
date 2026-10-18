@@ -204,6 +204,12 @@ export function GpuClockSection({ sparkId }: { sparkId: string }) {
             ? ` · @reboot job${status.cron.clocks ? ` (${status.cron.clocks} MHz)` : ""}`
             : " · not kept after reboot"}
       </p>
+      {status.cron.installed && status.cron.failed ? (
+        <p className="field-hint is-warn" role="alert" data-testid="gpu-clock-boot-failed">
+          The @reboot job ran at this boot and could not re-apply the cap, so the GPU is not capped. Press Apply to cap it
+          again, or check that <code>sudo -n nvidia-smi -lgc</code> still works for this user.
+        </p>
+      ) : null}
       <div className="gpu-clock__row">
         <input
           id="gpu-clock-max"

@@ -27,6 +27,9 @@ export function isSecureRequest(req) {
 /** How the cap is kept across boots, for the Activity line and the fleet report. */
 const keptText = (persistKind) => (persistKind === "cron" ? " by the @reboot cron job" : " by the boot service");
 
+/** Whole-batch budget for the fleet route; one unit's own timeout is 45 s, so this fits a few slow ones. */
+export const FLEET_DEADLINE_MS = 3 * 60_000;
+
 export function registerGpuClockRoutes(app, { manager, registry, recordEvent, allowRead, allowChange, rejectLimited }) {
   const handle = (fn) => async (req, res) => {
     try {
@@ -101,7 +104,10 @@ export function registerGpuClockRoutes(app, { manager, registry, recordEvent, al
  * `{ maxMHz, persist? }` or `{ reset: true }` — exactly one of maxMHz/reset.
  * One limiter hit per batch; every unit still gets its own Activity event.
  */
-export function registerGpuClockFleetRoute(app, { manager, registry, recordEvent, allowChange, rejectLimited }) {
+export function registerGpuClockFleetRoute(
+  app,
+  { manager, registry, recordEvent, allowChange, rejectLimited, fleetDeadlineMs = FLEET_DEADLINE_MS }
+) {
   app.post("/api/sparks/gpu-clock-all", async (req, res) => {
     const { maxMHz, persist, reset } = req.body ?? {};
     const wantsReset = reset === true;
@@ -119,7 +125,14 @@ export function registerGpuClockFleetRoute(app, { manager, registry, recordEvent
     }
     if (!allowChange(req)) return rejectLimited(res, "Too many GPU clock changes, try again in a minute");
     const results = [];
+    // One slow or hung unit must not hold the whole batch: past the deadline the
+    // remaining units are reported as not attempted, so the answer still arrives.
+    const deadline = Date.now() + fleetDeadlineMs;
     for (const spark of registry.sparks) {
+      if (Date.now() > deadline) {
+        results.push({ id: spark.id, ok: false, error: "Not attempted: the fleet change ran out of time before this unit" });
+        continue;
+      }
       const unsupported = gpuClockUnsupportedReason(spark);
       if (unsupported) {
         // Every unit is named in the report: a PC cannot take a cap, and saying so
@@ -159,7 +172,9 @@ export function registerGpuClockFleetRoute(app, { manager, registry, recordEvent
         }
       }
     }
-    // Skipped units (no GPU) are ok results; any real failure makes the batch unsuccessful.
-    res.json({ success: results.every((r) => r.ok), results });
+    // Skipped units (no GPU) are ok results, but they changed nothing: a batch where
+    // no unit was actually capped or reset is not a success, however many were skipped.
+    const applied = results.filter((r) => r.ok && r.supported !== false).length;
+    res.json({ success: results.every((r) => r.ok) && applied > 0, applied, results });
   });
 }

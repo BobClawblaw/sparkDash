@@ -49,7 +49,7 @@ const READY: GpuClockStatus = {
   sudo: "yes",
   persistKind: "unit",
   service: { installed: false, clocks: null, enabled: null, active: null },
-  cron: { installed: false, clocks: null },
+  cron: { installed: false, clocks: null, failed: false },
 };
 
 const settle = async () => {
@@ -94,6 +94,7 @@ describe("SettingsDialog fleet GPU clock and Save", () => {
     const refusal = "passwordless sudo is required for the user that runs the change";
     vi.mocked(setFleetGpuClock).mockResolvedValue({
       success: false,
+      applied: 0,
       results: [
         { id: "spark1", ok: false, error: refusal },
         { id: "spark2", ok: false, error: refusal },
@@ -112,6 +113,7 @@ describe("SettingsDialog fleet GPU clock and Save", () => {
 
     vi.mocked(setFleetGpuClock).mockResolvedValue({
       success: true,
+      applied: 2,
       results: [
         { id: "spark1", ok: true, capMHz: 1800, persistKind: "unit" },
         { id: "spark2", ok: true, capMHz: 1800, persistKind: "unit" },

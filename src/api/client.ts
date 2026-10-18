@@ -390,12 +390,16 @@ export function getQualityBench(
   return apiFetch(`/api/sparks/${id}/llm/quality-bench/${benchId}`);
 }
 
+/** `historyPort` scopes the saved-run list on its own: a port, or "all" for every endpoint on the unit. */
 export function listQualityBench(
   id: string,
-  port?: number
+  port?: number,
+  historyPort?: number | "all"
 ): Promise<QualityBenchListResponse> {
-  const q =
-    port != null && Number.isInteger(port) ? `?port=${encodeURIComponent(port)}` : "";
+  const params = new URLSearchParams();
+  if (port != null && Number.isInteger(port)) params.set("port", String(port));
+  if (historyPort != null) params.set("historyPort", String(historyPort));
+  const q = params.size ? `?${params}` : "";
   return apiFetch(`/api/sparks/${id}/llm/quality-bench${q}`);
 }
 
@@ -634,14 +638,14 @@ export function resetGpuClock(id: string, sudoPassword?: string): Promise<{ succ
 }
 
 /** POST /api/sparks/gpu-clock-all: cap (or, with reset, clear) the cap on every Spark. */
-export function setFleetGpuClock(maxMHz: number, persist = false): Promise<{ success: boolean; results: FleetGpuClockResult[] }> {
+export function setFleetGpuClock(maxMHz: number, persist = false): Promise<{ success: boolean; applied: number; results: FleetGpuClockResult[] }> {
   return apiFetch("/api/sparks/gpu-clock-all", {
     method: "POST",
     body: JSON.stringify({ maxMHz, persist }),
   });
 }
 
-export function resetFleetGpuClock(): Promise<{ success: boolean; results: FleetGpuClockResult[] }> {
+export function resetFleetGpuClock(): Promise<{ success: boolean; applied: number; results: FleetGpuClockResult[] }> {
   return apiFetch("/api/sparks/gpu-clock-all", {
     method: "POST",
     body: JSON.stringify({ reset: true }),

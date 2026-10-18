@@ -29,16 +29,22 @@ export const CRON_TAG = "sparkdash-gpu-clock-cap";
  * The `@reboot` crontab line used where sudo cannot reach a root shell. It
  * applies the cap at boot through the narrow rule the cap itself uses, so keeping
  * it needs no privilege capping does not already have, and refreshes the marker,
- * because a boot invalidates it. Placeholders are filled by the program from
- * paths it resolved on the unit; `$(...)` runs at boot, not at install time.
+ * because a boot invalidates it. It tries three times; when every attempt fails it
+ * writes the boot id to a failure marker (and tries `logger`), which the status
+ * program reports, so a boot that did not re-apply the cap is not silent.
+ * Placeholders are filled by the program from paths it resolved on the unit and
+ * checked with `safe_path`; `$(...)` runs at boot, not at install time.
  * No `%` may appear: crontab would read one as a newline.
  */
 function cronLine({ minMHz, maxMHz }) {
   return `${[
-    `@reboot for i in 1 2 3; do /bin/sleep 20; @@SUDO@@ -n @@NV@@ -lgc ${minMHz},${maxMHz} && {`,
+    `@reboot ok=0; for i in 1 2 3; do /bin/sleep 20; @@SUDO@@ -n @@NV@@ -lgc ${minMHz},${maxMHz} && {`,
     `/bin/mkdir -p "@@ALT_DIR@@" &&`,
-    `echo "${maxMHz} $(/bin/cat @@BOOTID@@)" > "@@ALT_MARKER@@" && break;`,
-    "}; done",
+    `echo "${maxMHz} $(/bin/cat @@BOOTID@@)" > "@@ALT_MARKER@@" &&`,
+    `/bin/rm -f "@@ALT_FAIL@@" && ok=1 && break;`,
+    "}; done;",
+    `[ $ok = 1 ] || { /bin/mkdir -p "@@ALT_DIR@@"; /bin/cat @@BOOTID@@ > "@@ALT_FAIL@@";`,
+    `logger -t sparkdash "GPU clock cap ${maxMHz} MHz was not applied at boot"; true; }`,
     `# ${CRON_TAG}`,
   ].join(" ")}\n`;
 }
@@ -200,6 +206,8 @@ function header(paths) {
     paths.sandbox ? `HOMEDIR=${paths.runDir}` : 'HOMEDIR="${HOME:-}"',
     paths.sandbox ? `ALT_DIR=${paths.runDir}` : 'ALT_DIR="$HOMEDIR/.config/sparkdash"',
     'ALT_MARKER="$ALT_DIR/gpu-clock-cap"',
+    // Written by the @reboot job when every attempt to re-apply the cap failed; holds that boot's id.
+    'ALT_FAIL="$ALT_DIR/gpu-clock-cap.failed"',
     `BOOTID_FILE=${paths.bootIdFile}`,
     "NV=''",
     `for c in ${nv}; do if [ -x "$c" ]; then NV="$c"; break; fi; done`,
@@ -210,6 +218,9 @@ function header(paths) {
     'clean() { printf "%s" "$1" | head -n 1 | tr -cd "A-Za-z0-9 .,:_()/-" | head -c 160; }',
     'hwmax() { "$NV" --query-gpu=clocks.max.gr --format=csv,noheader,nounits 2>/dev/null | head -n 1 | digits; }',
     'bootid() { tr -dc "0-9a-fA-F-" < "$BOOTID_FILE" 2>/dev/null | head -c 64; }',
+    // Anything that ends up inside the crontab line must be a plain absolute path:
+    // $HOME and the sudo path come from the unit, not from this module.
+    'safe_path() { case "$1" in /*) ;; *) return 1 ;; esac; case "$1" in *[!A-Za-z0-9_./-]*|*..*) return 1 ;; esac; }',
     paths.password
       ? // Why a refusal happened matters: only a wrong password counts toward the lock.
         "need_sudo() { SUDO_ERR=''; [ -z \"$SUDO\" ] && return 0; command -v sudo >/dev/null 2>&1 || { SUDO_ERR=__missing__; return 1; }; SUDO_ERR=$(printf '%s\\n' \"$PW\" | LC_ALL=C sudo -k -S -p '' true 2>&1 >/dev/null) && return 0; return 1; }"
@@ -217,7 +228,7 @@ function header(paths) {
       ? 'need_sudo() { [ -z "$SUDO" ] && return 0; command -v sudo >/dev/null 2>&1 && sudo -v; }'
       : // Either NOPASSWD: ALL, or a rule naming the commands actually run — the
         // README's own example is the narrow one, so a least-privilege unit can cap.
-        'need_sudo() { [ -z "$SUDO" ] && return 0; command -v sudo >/dev/null 2>&1 || return 1; $SUDO true >/dev/null 2>&1 || $SUDO -l "$NV" -lgc 0,3000 >/dev/null 2>&1; }',
+        'need_sudo() { [ -z "$SUDO" ] && return 0; command -v sudo >/dev/null 2>&1 || return 1; $SUDO true >/dev/null 2>&1 || $SUDO -l "$NV" -lgc 0,2400 >/dev/null 2>&1; }',
     // Root powers beyond the nvidia-smi commands (`sudo sh -c`): the root-owned
     // marker needs them, and so does the boot service. `sudo -n true` is not
     // enough of a probe here — a narrow rule refuses `sh` but still allows `-lgc`.
@@ -226,6 +237,8 @@ function header(paths) {
     // Keeping the cap without root: a @reboot line in the SSH user's own crontab,
     // offered only where cron is there to run it.
     `CRON_TAG="${CRON_TAG}"`,
+    // Our line is the one that ENDS in the tag: a user line that merely mentions it is never read, dropped or rewritten.
+    `CRON_RE='^@reboot .* # ${CRON_TAG}[[:space:]]*$'`,
     'CRONBIN=$(command -v crontab 2>/dev/null || true)',
     // The crontab is read once into CRON_TXT. A read that fails for any reason
     // other than "no crontab" is an error, never an empty crontab: writing back
@@ -241,8 +254,8 @@ function header(paths) {
     '  return 1',
     '}',
     `cron_text() { [ -z "$CRON_TXT" ] || printf '%s\\n' "$CRON_TXT"; }`,
-    'cron_has() { cron_text | grep -q "$CRON_TAG"; }',
-    'cron_clocks() { cron_text | grep "$CRON_TAG" | sed -n \'s/.*-lgc \\([0-9][0-9]*,[0-9][0-9]*\\).*/\\1/p\' | head -n 1; }',
+    'cron_has() { cron_text | grep -q "$CRON_RE"; }',
+    'cron_clocks() { cron_text | grep "$CRON_RE" | sed -n \'s/.*-lgc \\([0-9][0-9]*,[0-9][0-9]*\\).*/\\1/p\' | head -n 1; }',
     'can_cron() {',
     '  [ -n "$CRONBIN" ] || return 1',
     '  for u in cron.service crond.service; do',
@@ -254,9 +267,9 @@ function header(paths) {
     "drop_cron() {",
     '  [ -n "$CRONBIN" ] || return 0',
     '  cron_load || return 1',
-    '  cron_has || return 0',
+    '  cron_has || { rm -f "$ALT_FAIL" 2>/dev/null; return 0; }',
     '  T=$(mktemp) || return 1',
-    '  cron_text | grep -v "$CRON_TAG" > "$T"',
+    '  cron_text | grep -v "$CRON_RE" > "$T"',
     '  if [ -s "$T" ]; then',
     '    "$CRONBIN" "$T" >/dev/null 2>&1 || { rm -f "$T"; return 1; }',
     '  else',
@@ -266,7 +279,7 @@ function header(paths) {
     '  fi',
     '  rm -f "$T"',
     '  cron_load || return 1',
-    '  ! cron_has',
+    '  ! cron_has && { rm -f "$ALT_FAIL" 2>/dev/null; true; }',
     '}',
     // Removes a previous service (a stale one would re-apply the old cap at boot).
     "drop_service() {",
@@ -295,8 +308,10 @@ export function buildStatusProgram(overrides = {}) {
     `PK=none; if [ "$S" != no ]; then if can_sudo_root && [ -d ${paths.systemdRunDir} ]; then PK=unit; elif can_cron; then PK=cron; fi; fi`,
     // A fleet that had NOPASSWD: ALL and then narrowed it can carry both hooks,
     // so each one is reported on its own.
-    "CI=0; CCLK=''",
+    "CI=0; CCLK=''; CF=0",
     'if cron_load && cron_has; then CI=1; CCLK=$(cron_clocks); fi',
+    // The @reboot job leaves the boot id behind when it could not re-apply the cap; a stale line alone is not "kept".
+    'if [ "$CI" = 1 ] && [ -n "$(bootid)" ] && [ -r "$ALT_FAIL" ] && [ "$(tr -dc "0-9a-fA-F-" < "$ALT_FAIL" 2>/dev/null | head -c 64)" = "$(bootid)" ]; then CF=1; fi',
     "CAP=''",
     'read_marker() {',
     '  [ -r "$1" ] || return 0',
@@ -313,7 +328,7 @@ export function buildStatusProgram(overrides = {}) {
     `  EN=$($SYSTEMCTL is-enabled ${UNIT_NAME} 2>/dev/null | head -n 1 | tr -dc "a-z-")`,
     `  ACT=$($SYSTEMCTL is-active ${UNIT_NAME} 2>/dev/null | head -n 1 | tr -dc "a-z-")`,
     "fi",
-    "printf 'RESULT=ok\\nHWMAX=%s\\nSUDO=%s\\nPERSIST_KIND=%s\\nCAP=%s\\nSVC_INSTALLED=%s\\nSVC_CLOCKS=%s\\nSVC_ENABLED=%s\\nSVC_ACTIVE=%s\\nCRON_INSTALLED=%s\\nCRON_CLOCKS=%s\\n' \"$HW\" \"$S\" \"$PK\" \"$CAP\" \"$INST\" \"$CLK\" \"$EN\" \"$ACT\" \"$CI\" \"$CCLK\"",
+    "printf 'RESULT=ok\\nHWMAX=%s\\nSUDO=%s\\nPERSIST_KIND=%s\\nCAP=%s\\nSVC_INSTALLED=%s\\nSVC_CLOCKS=%s\\nSVC_ENABLED=%s\\nSVC_ACTIVE=%s\\nCRON_INSTALLED=%s\\nCRON_CLOCKS=%s\\nCRON_FAILED=%s\\n' \"$HW\" \"$S\" \"$PK\" \"$CAP\" \"$INST\" \"$CLK\" \"$EN\" \"$ACT\" \"$CI\" \"$CCLK\" \"$CF\"",
     "exit 0",
     "",
   ].join("\n");
@@ -349,6 +364,14 @@ export function buildApplyProgram({ minMHz, maxMHz, persist }, overrides = {}) {
     // empty. A service the cron hook has no root to remove would keep
     // re-applying its own cap at every boot.
     'cron_load || fail cron-failed "could not read the crontab; nothing was changed"',
+    // Everything the @reboot line will contain is checked before anything changes.
+    'if [ "$HOOK" = cron ]; then',
+    '  SUDO_BIN=$(command -v sudo 2>/dev/null || true)',
+    '  [ -n "$SUDO_BIN" ] || fail no-sudo "sudo was not found on this unit"',
+    '  for P in "$SUDO_BIN" "$NV" "$ALT_DIR" "$ALT_MARKER" "$ALT_FAIL" "$BOOTID_FILE"; do',
+    '    safe_path "$P" || fail cron-failed "a path the @reboot job needs (sudo, nvidia-smi or the home directory) has characters that cannot be put in a crontab safely; nothing was changed"',
+    '  done',
+    'fi',
     'if [ "$HOOK" = cron ] && [ -f "$UNIT" ]; then fail service-failed "a boot service this unit cannot remove without NOPASSWD: ALL is still installed and would re-apply its own cap at every boot; nothing was changed"; fi',
     // Order matters: nothing existing is touched until the new cap has been accepted by nvidia-smi.
     'lgc() { $SUDO "$NV" -lgc "$MIN,$MAX"; }',
@@ -365,14 +388,16 @@ export function buildApplyProgram({ minMHz, maxMHz, persist }, overrides = {}) {
     '}',
     'OUT=$(lgc 2>&1) || fail lgc-failed "nvidia-smi refused the clock cap: $(lgc_error "$OUT")"',
     'if [ "$PERSIST" = 0 ]; then',
+    // The cap is live and recorded first: if a stale hook then cannot be removed, the
+    // status still reads the cap that is really in force, and the error says what is left.
+    '  write_marker || fail marker-failed "could not record the cap"',
     // A stale hook of either kind would re-apply the old cap at the next boot.
-    '  drop_cron || fail cron-failed "could not remove the existing @reboot job"',
+    '  drop_cron || fail cron-failed "the cap is applied until the next reboot, but the existing @reboot job could not be removed and will re-apply its own cap at boot"',
     '  if [ -f "$UNIT" ]; then',
     // Stopping the old service resets the clocks (ExecStop), so the cap is applied again afterwards.
-    '    drop_service || fail service-failed "could not remove the existing service"',
+    '    drop_service || { lgc >/dev/null 2>&1; fail service-failed "the cap is applied until the next reboot, but the existing boot service could not be removed and will re-apply its own cap at boot"; }',
     '    OUT=$(lgc 2>&1) || fail lgc-failed "nvidia-smi refused the clock cap: $(lgc_error "$OUT")"',
     "  fi",
-    '  write_marker || fail marker-failed "could not record the cap"',
     "else",
     '  write_marker || fail marker-failed "could not record the cap"',
     "  D=$(mktemp -d) || fail service-failed \"could not create a temporary directory\"",
@@ -412,11 +437,9 @@ export function buildApplyProgram({ minMHz, maxMHz, persist }, overrides = {}) {
     "  cat > \"$D/cron\" <<'SPARKDASH_CRON_EOF'",
     cron.replace(/\n$/, ""),
     "SPARKDASH_CRON_EOF",
-    '  SUDO_BIN=$(command -v sudo 2>/dev/null || true)',
-    '  [ -n "$SUDO_BIN" ] || fail no-sudo "sudo was not found on this unit"',
-    '  CRON_LINE=$(sed "s#@@SUDO@@#$SUDO_BIN#g; s#@@NV@@#$NV#g; s#@@ALT_DIR@@#$ALT_DIR#g; s#@@ALT_MARKER@@#$ALT_MARKER#g; s#@@BOOTID@@#$BOOTID_FILE#g" "$D/cron") || fail cron-failed "could not prepare the @reboot job"',
+    '  CRON_LINE=$(sed "s#@@SUDO@@#$SUDO_BIN#g; s#@@NV@@#$NV#g; s#@@ALT_DIR@@#$ALT_DIR#g; s#@@ALT_MARKER@@#$ALT_MARKER#g; s#@@ALT_FAIL@@#$ALT_FAIL#g; s#@@BOOTID@@#$BOOTID_FILE#g" "$D/cron") || fail cron-failed "could not prepare the @reboot job"',
     '  T=$(mktemp) || fail cron-failed "could not create a temporary file"',
-    '  cron_text | grep -v "$CRON_TAG" > "$T"',
+    '  cron_text | grep -v "$CRON_RE" > "$T"',
     "  printf '%s\\n' \"$CRON_LINE\" >> \"$T\"",
     '  "$CRONBIN" "$T" >/dev/null 2>&1 || { rm -f "$T"; fail cron-failed "could not add the @reboot job; the cap applies until the next reboot"; }',
     '  rm -f "$T"',
@@ -425,6 +448,7 @@ export function buildApplyProgram({ minMHz, maxMHz, persist }, overrides = {}) {
     '    drop_cron',
     '    fail cron-failed "the @reboot job did not install; the cap applies until the next reboot"',
     '  fi',
+    '  rm -f "$ALT_FAIL" 2>/dev/null',
     '  fi',
     "fi",
     // Which hook took, so the row can name it instead of a bare "kept".
@@ -447,7 +471,7 @@ export function buildResetProgram(overrides = {}) {
     'drop_cron || fail cron-failed "could not remove the existing @reboot job"',
     'drop_service || fail service-failed "could not remove the existing service"',
     '$SUDO "$NV" -rgc >/dev/null 2>&1 || fail rgc-failed "nvidia-smi could not reset the clocks"',
-    'rm -f "$MARKER" "$ALT_MARKER" 2>/dev/null || $SUDO rm -f "$MARKER" "$ALT_MARKER" 2>/dev/null || fail marker-failed "could not clear the recorded cap"',
+    'rm -f "$MARKER" "$ALT_MARKER" "$ALT_FAIL" 2>/dev/null || $SUDO rm -f "$MARKER" "$ALT_MARKER" "$ALT_FAIL" 2>/dev/null || fail marker-failed "could not clear the recorded cap"',
     paths.manual ? "printf 'Done: GPU clock cap removed.\\n'" : "printf 'RESULT=ok\\n'",
     "exit 0",
     "",
@@ -464,7 +488,7 @@ export function parseProgramOutput(out) {
   const KEYS = new Set([
     "RESULT", "CODE", "MSG", "HWMAX", "SUDO", "PERSIST_KIND", "PERSIST", "CAP",
     "SVC_INSTALLED", "SVC_CLOCKS", "SVC_ENABLED", "SVC_ACTIVE",
-    "CRON_INSTALLED", "CRON_CLOCKS",
+    "CRON_INSTALLED", "CRON_CLOCKS", "CRON_FAILED",
   ]);
   const res = {};
   for (const line of String(out ?? "").split("\n")) {

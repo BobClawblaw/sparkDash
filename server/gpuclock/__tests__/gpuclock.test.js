@@ -95,12 +95,16 @@ case "$1" in
     # tool, it exits non-zero with something other than "no crontab for".
     [ -f ${path.join(root, "crontab.broken")} ] && { echo "crontab: cannot open spool" >&2; exit 1; }
     if [ -f ${crontab} ]; then cat ${crontab}; else echo "no crontab for $(id -un)" >&2; exit 1; fi ;;
-  -r) [ -f ${crontab} ] || { echo "no crontab for $(id -un)" >&2; exit 1; }; rm -f ${crontab} ;;
-  *) ${cronMangles ? `sed 's/-lgc [0-9,]*/-lgc 0,9/' "$1" > ${crontab}` : `cp "$1" ${crontab}`} ;;
+  -r) [ -f ${path.join(root, "crontab.readonly")} ] && { echo "crontab: installing new crontab failed" >&2; exit 1; }
+      [ -f ${crontab} ] || { echo "no crontab for $(id -un)" >&2; exit 1; }; rm -f ${crontab} ;;
+  *) [ -f ${path.join(root, "crontab.readonly")} ] && { echo "crontab: installing new crontab failed" >&2; exit 1; }
+     ${cronMangles ? `sed 's/-lgc [0-9,]*/-lgc 0,9/' "$1" > ${crontab}` : `cp "$1" ${crontab}`} ;;
 esac
 `,
     { mode: 0o755 }
   );
+  // Boot-time failures go to `logger`; the sandbox records instead of writing to the host's journal.
+  fs.writeFileSync(path.join(bin, "logger"), `#!/bin/sh\necho "logger $*" >> ${calls}\n`, { mode: 0o755 });
   const paths = {
     unitDir: path.join(root, "units"),
     runDir: path.join(root, "run"),
@@ -366,17 +370,17 @@ test("GpuClockManager.status: normal answer, and a unit without nvidia-smi is 'u
   assert.deepEqual(await ok.status(spark), {
     supported: true, hwMaxMHz: 3003, capMHz: 1800, sudo: "yes", persistKind: "unit",
     service: { installed: true, clocks: "0,1800", enabled: "enabled", active: "active" },
-    cron: { installed: false, clocks: null },
+    cron: { installed: false, clocks: null, failed: false },
   });
   // A unit whose rule only covers the nvidia-smi commands keeps the cap with its
   // own @reboot job: the row reports that mechanism, and a missing line means no
   // mechanism at all, never a permissive default.
   const narrow = new GpuClockManager({
-    run: async () => "RESULT=ok\nHWMAX=3003\nSUDO=yes\nPERSIST_KIND=cron\nCRON_INSTALLED=1\nCRON_CLOCKS=0,1800\nCAP=1800",
+    run: async () => "RESULT=ok\nHWMAX=3003\nSUDO=yes\nPERSIST_KIND=cron\nCRON_INSTALLED=1\nCRON_CLOCKS=0,1800\nCRON_FAILED=1\nCAP=1800",
   });
   const narrowStatus = await narrow.status(spark);
   assert.equal(narrowStatus.persistKind, "cron");
-  assert.deepEqual(narrowStatus.cron, { installed: true, clocks: "0,1800" });
+  assert.deepEqual(narrowStatus.cron, { installed: true, clocks: "0,1800", failed: true });
   const silent = new GpuClockManager({ run: async () => "RESULT=ok\nHWMAX=3003\nSUDO=yes\nCAP=1800" });
   assert.equal((await silent.status(spark)).persistKind, "none");
   // A junk mechanism is no mechanism, and an unknown hook is not "installed".
@@ -385,7 +389,7 @@ test("GpuClockManager.status: normal answer, and a unit without nvidia-smi is 'u
   });
   const junkStatus = await junk.status(spark);
   assert.equal(junkStatus.persistKind, "none");
-  assert.deepEqual(junkStatus.cron, { installed: false, clocks: null });
+  assert.deepEqual(junkStatus.cron, { installed: false, clocks: null, failed: false });
   const none = new GpuClockManager({ run: async () => "RESULT=error\nCODE=no-nvidia\nMSG=nvidia-smi was not found on this unit" });
   assert.equal((await none.status(spark)).supported, false);
 });
@@ -735,6 +739,139 @@ test("a crontab that stores the @reboot job with other clocks is reported as not
     assert.equal(sb.lockText(), "0,1800");
     assert.doesNotMatch(sb.cronText(), /sparkdash-gpu-clock-cap/);
     assert.equal(sb.cronText(), jobs);
+  } finally {
+    sb.cleanup();
+  }
+});
+
+/** Run the installed @reboot line the way cron would after a reboot (minus the boot-time sleep). */
+function runRebootLine(sb) {
+  const line = sb.cronText().split("\n").find((l) => l.startsWith("@reboot"));
+  return sb.shell(line.replace(/^@reboot /, "").replace(/\/bin\/sleep 20; /g, ""));
+}
+
+test("an @reboot job that cannot re-apply the cap at boot says so: failure marker, log line, status, cleared by the next good boot", () => {
+  const sb = sandbox({ narrowSudo: true, cron: true });
+  try {
+    sb.run(buildApplyProgram({ minMHz: 0, maxMHz: 1800, persist: true }, sb.paths));
+    assert.equal(sb.run(buildStatusProgram(sb.paths)).CRON_FAILED, "0");
+
+    // A reboot, and sudo no longer lets nvidia-smi through.
+    fs.rmSync(path.join(sb.root, "lock"));
+    sb.write("boot_id", "22222222-3333-4444-5555-666666666666\n");
+    fs.writeFileSync(path.join(sb.bin, "nvidia-smi"), '#!/bin/sh\necho "refused" >&2\nexit 4\n', { mode: 0o755 });
+    runRebootLine(sb);
+    assert.equal(sb.lockText(), null, "the cap was not re-applied");
+    assert.equal(sb.read(`run/${MARKER_FILE}.failed`).trim(), "22222222-3333-4444-5555-666666666666");
+    assert.match(sb.calls(), /^logger -t sparkdash GPU clock cap 1800 MHz was not applied at boot$/m);
+    const failed = sb.run(buildStatusProgram(sb.paths));
+    assert.equal(failed.CRON_INSTALLED, "1");
+    assert.equal(failed.CRON_FAILED, "1");
+
+    // The failure belongs to that boot: after the next one, with nothing run yet, it is stale.
+    sb.write("boot_id", "33333333-4444-5555-6666-777777777777\n");
+    assert.equal(sb.run(buildStatusProgram(sb.paths)).CRON_FAILED, "0");
+
+    // A boot where the cap goes through clears it.
+    fs.writeFileSync(path.join(sb.bin, "nvidia-smi"), '#!/bin/sh\ncase "$1" in -lgc) echo "$2" > ' + path.join(sb.root, "lock") + " ;; esac\n", {
+      mode: 0o755,
+    });
+    sb.write("boot_id", "22222222-3333-4444-5555-666666666666\n");
+    runRebootLine(sb);
+    assert.equal(sb.lockText(), "0,1800");
+    assert.equal(sb.read(`run/${MARKER_FILE}.failed`), null);
+    assert.equal(sb.run(buildStatusProgram(sb.paths)).CRON_FAILED, "0");
+  } finally {
+    sb.cleanup();
+  }
+});
+
+test("a failure marker is cleared by Apply and by Remove, and never reported without the job", () => {
+  for (const second of ["apply", "reset"]) {
+    const sb = sandbox({ narrowSudo: true, cron: true });
+    try {
+      sb.run(buildApplyProgram({ minMHz: 0, maxMHz: 1800, persist: true }, sb.paths));
+      sb.write(`run/${MARKER_FILE}.failed`, "11111111-2222-3333-4444-555555555555\n");
+      assert.equal(sb.run(buildStatusProgram(sb.paths)).CRON_FAILED, "1");
+      if (second === "apply") sb.run(buildApplyProgram({ minMHz: 0, maxMHz: 2000, persist: true }, sb.paths));
+      else sb.run(buildResetProgram(sb.paths));
+      assert.equal(sb.read(`run/${MARKER_FILE}.failed`), null, second);
+      assert.equal(sb.run(buildStatusProgram(sb.paths)).CRON_FAILED, "0", second);
+    } finally {
+      sb.cleanup();
+    }
+  }
+  // A leftover marker with no job installed is not a failed job.
+  const sb = sandbox({ narrowSudo: true, cron: true });
+  try {
+    sb.write(`run/${MARKER_FILE}.failed`, "11111111-2222-3333-4444-555555555555\n");
+    assert.equal(sb.run(buildStatusProgram(sb.paths)).CRON_FAILED, "0");
+  } finally {
+    sb.cleanup();
+  }
+});
+
+test("a sudo path with characters a crontab line cannot carry is refused before anything changes", () => {
+  const sb = sandbox({ narrowSudo: true, cron: true });
+  try {
+    const jobs = "0 4 * * * /usr/local/bin/backup.sh\n";
+    sb.write("crontab", jobs);
+    // A `sudo` found first on PATH under a directory with a space and a `;`.
+    const odd = path.join(sb.root, "odd dir;x");
+    fs.mkdirSync(odd);
+    fs.copyFileSync(path.join(sb.bin, "sudo"), path.join(odd, "sudo"));
+    fs.chmodSync(path.join(odd, "sudo"), 0o755);
+    const out = execFileSync("sh", ["-c", buildApplyProgram({ minMHz: 0, maxMHz: 1800, persist: true }, sb.paths)], {
+      encoding: "utf8",
+      env: { ...process.env, PATH: `${odd}:${sb.bin}:${process.env.PATH}` },
+    });
+    const res = parseProgramOutput(out);
+    assert.equal(res.RESULT, "error");
+    assert.equal(res.CODE, "cron-failed");
+    assert.match(res.MSG, /cannot be put in a crontab safely/);
+    assert.equal(sb.lockText(), null, "the GPU was not touched");
+    assert.equal(sb.cronText(), jobs);
+    assert.doesNotMatch(sb.calls(), /-lgc 0,1800/);
+  } finally {
+    sb.cleanup();
+  }
+});
+
+test("only the line that ends in our tag is ours: user lines that mention it are kept", () => {
+  const sb = sandbox({ narrowSudo: true, cron: true });
+  try {
+    const jobs = [
+      "0 4 * * * /usr/local/bin/backup.sh # sparkdash-gpu-clock-cap is not ours here",
+      "@reboot /usr/local/bin/notify.sh # note about sparkdash-gpu-clock-cap",
+      "# sparkdash-gpu-clock-cap",
+      "",
+    ].join("\n");
+    sb.write("crontab", jobs);
+    assert.equal(sb.run(buildStatusProgram(sb.paths)).CRON_INSTALLED, "0");
+    sb.run(buildApplyProgram({ minMHz: 0, maxMHz: 1800, persist: true }, sb.paths));
+    assert.equal(sb.run(buildStatusProgram(sb.paths)).CRON_INSTALLED, "1");
+    sb.run(buildApplyProgram({ minMHz: 0, maxMHz: 2000, persist: true }, sb.paths));
+    assert.equal(sb.cronText().split("\n").filter((l) => l.startsWith("@reboot ") && l.includes("-lgc")).length, 1);
+    sb.run(buildResetProgram(sb.paths));
+    assert.equal(sb.cronText(), jobs);
+  } finally {
+    sb.cleanup();
+  }
+});
+
+test("a cap without keep-after-reboot is recorded before old hooks go, and a hook that cannot be removed is named", () => {
+  const sb = sandbox({ narrowSudo: true, cron: true });
+  try {
+    sb.run(buildApplyProgram({ minMHz: 0, maxMHz: 1800, persist: true }, sb.paths));
+    // The crontab can no longer be written: the old @reboot job cannot be dropped.
+    sb.write("crontab.readonly", "");
+    const res = sb.run(buildApplyProgram({ minMHz: 0, maxMHz: 2000, persist: false }, sb.paths));
+    assert.equal(res.RESULT, "error");
+    assert.equal(res.CODE, "cron-failed");
+    assert.match(res.MSG, /cap is applied until the next reboot, but the existing @reboot job could not be removed and will re-apply its own cap at boot/);
+    assert.equal(sb.lockText(), "0,2000", "the cap that was asked for is in force");
+    assert.equal(sb.run(buildStatusProgram(sb.paths)).CAP, "2000", "and the status reads it, not the stale one");
+    assert.match(sb.cronText(), /-lgc 0,1800/, "the stale job is still there, as the error says");
   } finally {
     sb.cleanup();
   }
