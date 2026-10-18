@@ -44,6 +44,21 @@ export function fetchPinned(target, opts) {
       reject(statusError(499, "Helper request aborted"));
       return;
     }
+    let settled = false;
+    let response = null;
+    let deadline;
+    const onAbort = () => finish(statusError(499, "Helper request aborted"));
+    function finish(err, value) {
+      if (settled) return;
+      settled = true;
+      clearTimeout(deadline);
+      opts.signal?.removeEventListener("abort", onAbort);
+      if (err) {
+        response?.destroy();
+        req.destroy();
+        reject(err?.status ? err : statusError(502, "Helper request failed"));
+      } else resolve(value);
+    }
     const req = lib.request(
       {
         protocol: parsed.protocol,
@@ -65,58 +80,51 @@ export function fetchPinned(target, opts) {
         },
       },
       (res) => {
+        response = res;
+        res.on("error", (err) => finish(err));
+        res.on("aborted", () => finish(statusError(502, "Helper response was interrupted")));
+        res.on("close", () => {
+          if (!res.complete) finish(statusError(502, "Helper response was interrupted"));
+        });
+        if (settled) {
+          res.destroy();
+          return;
+        }
         const code = res.statusCode || 0;
         if (code >= 300 && code < 400) {
-          res.resume();
-          reject(statusError(403, "Helper redirects are not followed"));
+          finish(statusError(403, "Helper redirects are not followed"));
           return;
         }
         const chunks = [];
         let received = 0;
-        let failed = false;
         res.on("data", (chunk) => {
-          if (failed) return;
+          if (settled) return;
           received += chunk.length;
           if (received > maxBytes) {
-            failed = true;
-            req.destroy();
-            reject(statusError(502, "Helper response exceeded the size cap"));
+            finish(statusError(502, "Helper response exceeded the size cap"));
             return;
           }
           chunks.push(chunk);
         });
         res.on("end", () => {
-          if (failed) return;
-          const body = Buffer.concat(chunks).toString("utf8");
+          if (settled) return;
           if (code < 200 || code >= 300) {
-            // Never use 401 here. The dashboard client treats 401 as "this
-            // sparkDash server wants its access token" and opens that dialog.
-            reject(statusError(502, `Helper answered HTTP ${code}`));
+            // Helper 401 must not open the dashboard access-token dialog.
+            finish(statusError(502, `Helper answered HTTP ${code}`));
             return;
           }
-          resolve({ status: code, body });
+          finish(null, { status: code, body: Buffer.concat(chunks).toString("utf8") });
         });
       }
     );
-    const fail = (err) => {
-      if (err?.status) reject(err);
-      else reject(statusError(502, "Helper request failed"));
-    };
-    req.on("timeout", () => {
-      req.destroy();
-      fail(statusError(504, "Helper request timed out"));
-    });
+    req.on("timeout", () => finish(statusError(504, "Helper request timed out")));
     req.on("error", (err) => {
-      if (err?.code === "ABORT_ERR" || opts.signal?.aborted) fail(statusError(499, "Helper request aborted"));
-      else fail(err);
+      if (err?.code === "ABORT_ERR" || opts.signal?.aborted) onAbort();
+      else finish(err);
     });
-    if (opts.signal) {
-      const onAbort = () => {
-        req.destroy();
-        fail(statusError(499, "Helper request aborted"));
-      };
-      opts.signal.addEventListener("abort", onAbort, { once: true });
-    }
+    // Socket inactivity alone does not bound a peer that trickles bytes forever.
+    deadline = setTimeout(() => finish(statusError(504, "Helper request timed out")), timeoutMs);
+    opts.signal?.addEventListener("abort", onAbort, { once: true });
     req.end();
   });
 }

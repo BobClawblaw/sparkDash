@@ -5,6 +5,7 @@ import { argvFromEnv, createAcpBridge } from "./acpBridge.js";
 function scriptedProcess(onMessage) {
   const dataHandlers = [];
   const proc = {
+    emitStdout(chunk) { for (const fn of dataHandlers) fn(Buffer.from(chunk)); },
     killed: false,
     signal: null,
     written: [],
@@ -209,4 +210,165 @@ test("stop drops a late RPC", async () => {
   assert.equal(bridge.current().rows.length, 0);
   assert.equal(bridge.current().coverage, "unavailable");
   assert.equal(bridge.current().observedAt, null);
+});
+
+test("a missing adapter binary reports unavailable without crashing the helper", async () => {
+  const { execFile } = await import("node:child_process");
+  const { promisify } = await import("node:util");
+  const run = promisify(execFile);
+  const moduleUrl = new URL("./acpBridge.js", import.meta.url).href;
+  const { stdout } = await run(process.execPath, ["--input-type=module", "-e", `
+    import { createAcpBridge } from ${JSON.stringify(moduleUrl)};
+    const bridge = createAcpBridge({ harness: 'omp', argv: ['/nonexistent/sparkdash-fixture-adapter'] });
+    try {
+      const result = await bridge.refresh();
+      console.log(result.coverage);
+    } finally { bridge.stop(); }
+  `], { timeout: 3000 });
+  assert.equal(stdout.trim(), "unavailable");
+});
+
+test("adapter children cannot read the helper bearer but keep legitimate configuration", async () => {
+  const { defaultOpenProcess } = await import("./acpBridge.js");
+  const { once } = await import("node:events");
+  const savedToken = process.env.OCCUPANCY_TOKEN;
+  const savedConfig = process.env.OMP_ACP_COMMAND;
+  process.env.OCCUPANCY_TOKEN = "disposable-fixture-only";
+  process.env.OMP_ACP_COMMAND = "fixture-command";
+  let proc;
+  try {
+    proc = defaultOpenProcess([process.execPath, "-e", `console.log(JSON.stringify({
+      tokenAbsent: !Object.hasOwn(process.env, 'OCCUPANCY_TOKEN'),
+      configKept: process.env.OMP_ACP_COMMAND === 'fixture-command',
+      pathKept: Boolean(process.env.PATH),
+      homeKept: Boolean(process.env.HOME)
+    }))`]);
+    let output = "";
+    proc.stdout.on("data", (chunk) => { output += chunk; });
+    const [code] = await once(proc, "close");
+    assert.equal(code, 0);
+    assert.deepEqual(JSON.parse(output), { tokenAbsent: true, configKept: true, pathKept: true, homeKept: true });
+  } finally {
+    if (savedToken === undefined) delete process.env.OCCUPANCY_TOKEN;
+    else process.env.OCCUPANCY_TOKEN = savedToken;
+    if (savedConfig === undefined) delete process.env.OMP_ACP_COMMAND;
+    else process.env.OMP_ACP_COMMAND = savedConfig;
+    if (proc && proc.exitCode === null) proc.kill();
+  }
+});
+
+for (const suffix of ["", "\n"]) {
+  test(`oversized ACP ${suffix ? "line" : "unterminated output"} fails and closes only its child`, async () => {
+    let proc;
+    let lists = 0;
+    const bridge = createAcpBridge({
+      harness: "omp", argv: ["fixture"], stdoutCap: 1024,
+      openProcess: () => {
+        proc = scriptedProcess((msg, reply) => {
+          if (msg.method === "initialize") reply({ id: msg.id, result: initResult() });
+          if (msg.method === "session/list") {
+            if (++lists === 1) reply({ id: msg.id, result: { sessions: [{ sessionId: "kept" }] } });
+            else queueMicrotask(() => {
+              proc.emitStdout("x".repeat(1025) + suffix);
+              // Bound the reproduction on the old code, which otherwise waits for its RPC timeout.
+              setImmediate(() => reply({ id: msg.id, result: { sessions: [] } }));
+            });
+          }
+        });
+        return proc;
+      },
+    });
+    try {
+      await bridge.refresh();
+      const result = await bridge.refresh();
+      assert.equal(result.stale, true);
+      assert.match(result.error, /stdout.*cap/);
+      assert.deepEqual(result.rows.map((row) => row.sessionId), ["kept"]);
+      assert.equal(proc.killed, true);
+    } finally { bridge.stop(); }
+  });
+}
+
+test("persistent allowed traffic has bounded RPC history and bounded stored row fields", async () => {
+  const bridge = createAcpBridge({
+    harness: "omp", argv: ["fixture"],
+    openProcess: () => scriptedProcess((msg, reply) => reply({
+      id: msg.id,
+      result: msg.method === "initialize" ? initResult() : { sessions: [
+        { sessionId: "ok", title: "t".repeat(1000), cwd: "c".repeat(1000), updatedAt: "u".repeat(1000) },
+        { sessionId: "s".repeat(1000) },
+      ] },
+    })),
+  });
+  try {
+    for (let i = 0; i < 200; i++) await bridge.refresh();
+    assert.ok(bridge.sent().length <= 64, "diagnostic history must stay bounded");
+    assert.equal(bridge.current().coverage, "supported");
+    const [row] = bridge.current().rows;
+    assert.equal(bridge.current().rows.length, 1);
+    assert.equal(row.title.length, 200);
+    assert.equal(row.cwd.length, 500);
+    assert.ok(row.updatedAt.length <= 64);
+  } finally { bridge.stop(); }
+});
+
+test("allowed frames can share a chunk and split UTF-8 without exceeding the per-frame cap", async () => {
+  let proc;
+  const bridge = createAcpBridge({
+    harness: "omp", argv: ["fixture"], stdoutCap: 256,
+    openProcess: () => {
+      proc = scriptedProcess((msg, reply) => {
+        if (msg.method === "initialize") reply({ id: msg.id, result: initResult() });
+        else {
+          const noise = '{"jsonrpc":"2.0","method":"notice"}\n'.repeat(100);
+          const frame = Buffer.from(JSON.stringify({ id: msg.id, result: { sessions: [{ sessionId: "ok", title: "é" }] } }) + "\n");
+          const split = frame.indexOf(Buffer.from("é")) + 1;
+          proc.emitStdout(Buffer.concat([Buffer.from(noise), frame.subarray(0, split)]));
+          proc.emitStdout(frame.subarray(split));
+        }
+      });
+      return proc;
+    },
+  });
+  try {
+    const result = await bridge.refresh();
+    assert.equal(result.coverage, "supported");
+    assert.equal(result.rows[0].title, "é");
+  } finally { bridge.stop(); }
+});
+
+test("oversized stdout terminates the owned real child and permits a fresh child", { timeout: 3000 }, async () => {
+  const { defaultOpenProcess } = await import("./acpBridge.js");
+  const { once } = await import("node:events");
+  let proc;
+  let closed;
+  let starts = 0;
+  const script = `
+    const lines = require('node:readline').createInterface({ input: process.stdin });
+    lines.on('line', line => {
+      const msg = JSON.parse(line);
+      if (msg.method === 'initialize') console.log(JSON.stringify({ id: msg.id, result: { agentCapabilities: { sessionCapabilities: { list: {} } } } }));
+      else if (process.argv[1] === 'flood') process.stdout.write('x'.repeat(2048));
+      else console.log(JSON.stringify({ id: msg.id, result: { sessions: [] } }));
+    });
+  `;
+  const bridge = createAcpBridge({
+    harness: "omp", argv: ["fixture"], stdoutCap: 1024,
+    openProcess: () => {
+      proc = defaultOpenProcess([process.execPath, "-e", script, starts++ === 0 ? "flood" : "good"]);
+      closed = once(proc, "close");
+      return proc;
+    },
+  });
+  try {
+    const failed = await bridge.refresh();
+    assert.equal(failed.coverage, "unavailable");
+    assert.match(failed.error, /stdout.*cap/);
+    await closed;
+    assert.throws(() => process.kill(proc.pid, 0), { code: "ESRCH" });
+    assert.equal((await bridge.refresh()).coverage, "supported");
+    bridge.stop();
+    await closed;
+    assert.throws(() => process.kill(proc.pid, 0), { code: "ESRCH" });
+  } finally { bridge.stop(); }
 });

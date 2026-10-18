@@ -23,7 +23,7 @@ test("forbidden DNS answers are rejected and a pinned connection ignores a later
   let fetches = 0;
   const server = await listen((_req, res) => {
     fetches += 1;
-    res.end(JSON.stringify({ observedAt: 5, adapters: {}, rows: [] }));
+    res.end(JSON.stringify({ schemaVersion: 1, observedAt: 5, adapters: {}, rows: [] }));
   });
   const port = server.address().port;
   await assert.rejects(
@@ -251,6 +251,7 @@ test("two general routes leave the row unmapped and a native endpoint can match"
 
 test("normalize strips ACP activity and unknown harnesses", () => {
   const payload = normalizeOccupancyPayload({
+    schemaVersion: 1,
     observedAt: 4,
     adapters: { nope: { coverage: "supported" }, opencode: { coverage: "supported", stale: false, rows: 1 } },
     rows: [
@@ -262,4 +263,80 @@ test("normalize strips ACP activity and unknown harnesses", () => {
   assert.equal(payload.rows[0].activity, "unknown");
   assert.equal(payload.rows[0].origin, null);
   assert.equal(payload.adapters.nope, undefined);
+});
+
+test("a helper dropping mid-body settles promptly and removes its abort listener", { timeout: 3000 }, async (t) => {
+  const { getEventListeners } = await import("node:events");
+  const server = await listen((_req, res) => {
+    res.writeHead(200, { "content-length": "10000" });
+    res.write('{"rows":[');
+    setTimeout(() => res.destroy(), 10);
+  });
+  t.after(() => { server.closeAllConnections(); server.close(); });
+  const controller = new AbortController();
+  let timer;
+  try {
+    const outcome = await Promise.race([
+      fetchHelper(`http://127.0.0.1:${server.address().port}/occupancy`, { signal: controller.signal })
+        .then(() => "success", () => "failed"),
+      new Promise((resolve) => { timer = setTimeout(() => resolve("unsettled"), 1000); }),
+    ]);
+    assert.equal(outcome, "failed");
+    assert.equal(getEventListeners(controller.signal, "abort").length, 0);
+  } finally { clearTimeout(timer); controller.abort(); }
+});
+
+test("helper health requires the existing versioned occupancy envelope", async () => {
+  const { createOccupancyHelper } = await import("../../../scripts/occupancy-helper/index.js");
+  const helper = createOccupancyHelper({ adapters: ["omp"], commands: { omp: "" } });
+  const valid = helper.payload(42);
+  assert.equal(normalizeOccupancyPayload(valid).observedAt, 42);
+  assert.equal(normalizeOccupancyPayload(valid).adapters.omp.coverage, "unavailable");
+  for (const malformed of [
+    {}, [], null, { error: "not occupancy" },
+    { ...valid, schemaVersion: 2 }, { ...valid, schemaVersion: undefined },
+    { ...valid, observedAt: null }, { ...valid, observedAt: "42" }, { ...valid, observedAt: Infinity },
+    { ...valid, rows: {} }, { ...valid, rows: undefined },
+    { ...valid, adapters: [] }, { ...valid, adapters: null },
+    { ...valid, adapters: { omp: {} } },
+    { ...valid, adapters: { omp: { coverage: "supported", stale: false, rows: -1 } } },
+  ]) {
+    assert.throws(() => normalizeOccupancyPayload(malformed), /occupancy/);
+  }
+});
+
+test("trickled bodies have an absolute deadline, abort settles, and all requests detach listeners", { timeout: 3000 }, async (t) => {
+  const { getEventListeners } = await import("node:events");
+  let closed = 0;
+  let resolveClosed;
+  const bothClosed = new Promise((resolve) => { resolveClosed = resolve; });
+  const server = await listen((req, res) => {
+    if (req.url === "/good") {
+      res.end(JSON.stringify({ schemaVersion: 1, observedAt: 1, adapters: {}, rows: [] }));
+      return;
+    }
+    res.writeHead(200);
+    res.write(" ");
+    const timer = setInterval(() => res.write(" "), 5);
+    res.once("close", () => {
+      clearInterval(timer);
+      if (++closed === 2) resolveClosed();
+    });
+  });
+  t.after(() => { server.closeAllConnections(); server.close(); });
+  const base = `http://127.0.0.1:${server.address().port}`;
+  for (const mode of ["deadline", "abort", "good"]) {
+    const controller = new AbortController();
+    const pending = fetchHelper(`${base}/${mode}`, { signal: controller.signal, timeoutMs: mode === "good" ? 1000 : 150 });
+    let timer;
+    try {
+      if (mode === "abort") timer = setTimeout(() => controller.abort(), 20);
+      if (mode === "good") assert.deepEqual((await pending).rows, []);
+      else await assert.rejects(pending, mode === "abort" ? /aborted/ : /timed out/);
+      assert.equal(getEventListeners(controller.signal, "abort").length, 0);
+    } finally { clearTimeout(timer); }
+  }
+  // Wait for the peer-side close events, not merely the promise rejection.
+  await bothClosed;
+  assert.equal(closed, 2);
 });

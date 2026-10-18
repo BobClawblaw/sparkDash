@@ -21,23 +21,25 @@ export function createOccupancyPoller({
   let epoch = 0;
   let timer = null;
   let inflight = null;
+  let helpers = loadHelpers();
   /** @type {Map<string, object>} */
   const caches = new Map();
   /** @type {Map<string, { coverage: string, error: string | null, observedAt: number | null }>} */
   const health = new Map();
 
   function enabledSnapshot() {
-    return loadHelpers().filter((helper) => helper.enabled);
+    return helpers.filter((helper) => helper.enabled);
   }
 
   async function tick() {
+    helpers = loadHelpers();
     const ticket = epoch;
     const controller = new AbortController();
-    const helpers = enabledSnapshot();
+    const enabled = enabledSnapshot();
     const tokens = loadHelperTokens();
     const allowed = allowlist();
     const job = Promise.all(
-      helpers.map(async (helper) => {
+      enabled.map(async (helper) => {
         try {
           const payload = await fetchImpl(helper.url, {
             token: tokens.get(helper.id) || "",
@@ -124,6 +126,7 @@ export function createOccupancyPoller({
 
   function reconfigure() {
     bump();
+    helpers = loadHelpers();
     const live = new Set(enabledSnapshot().map((helper) => helper.id));
     for (const id of [...caches.keys()]) if (!live.has(id)) caches.delete(id);
     if (timer) void tick();
@@ -131,7 +134,7 @@ export function createOccupancyPoller({
 
   function projection() {
     return projectOccupancy({
-      helpers: loadHelpers(),
+      helpers,
       caches,
       sparks: listSparks(),
       now: now(),

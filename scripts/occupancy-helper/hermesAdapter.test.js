@@ -54,3 +54,22 @@ test("a state.db read failure is partial and does not pretend the list is empty-
   assert.equal(none.coverage, "partial");
   assert.match(none.error, /no readable sessions/);
 });
+
+test("the private database subprocess also excludes the helper bearer", async (t) => {
+  const { readHermesDb } = await import("./hermesAdapter.js");
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "sparkdash-hermes-env-"));
+  const savedPath = process.env.PATH;
+  const savedToken = process.env.OCCUPANCY_TOKEN;
+  t.after(() => {
+    process.env.PATH = savedPath;
+    if (savedToken === undefined) delete process.env.OCCUPANCY_TOKEN;
+    else process.env.OCCUPANCY_TOKEN = savedToken;
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+  fs.writeFileSync(path.join(dir, "python3"), `#!${process.execPath}\nconsole.log(JSON.stringify({ rows: [{
+    id: 'fixture', title: !Object.hasOwn(process.env, 'OCCUPANCY_TOKEN') && Boolean(process.env.HOME) ? 'isolated' : 'exposed'
+  }] }));\n`, { mode: 0o700 });
+  process.env.PATH = dir;
+  process.env.OCCUPANCY_TOKEN = "disposable-fixture-only";
+  assert.equal(readHermesDb(path.join(dir, "unused.db"))[0].title, "isolated");
+});

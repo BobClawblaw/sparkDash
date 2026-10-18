@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
+import { adapterEnv } from "./adapterEnv.js";
 
 /**
  * Read-only Hermes session metadata. Does not launch hermes-acp: that list
@@ -199,7 +200,7 @@ for record in con.execute(query):
     out.append(item)
 print(json.dumps({"rows": out}))
 `;
-  const result = spawnSync("python3", ["-c", script, dbPath], { encoding: "utf8", timeout: 8_000 });
+  const result = spawnSync("python3", ["-c", script, dbPath], { env: adapterEnv(), encoding: "utf8", timeout: 8_000 });
   if (result.error || result.status !== 0) {
     throw new Error("state.db could not be read");
   }

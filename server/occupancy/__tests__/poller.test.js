@@ -137,3 +137,101 @@ describe("occupancy poller", { concurrency: 1 }, () => {
     await poller.stop();
   });
 });
+
+test("snapshots do not read config and corrupt refresh keeps last good routes", async () => {
+  writeHelpers([{ id: "mac", enabled: true, url: "http://127.0.0.1/occupancy", harnesses: ["opencode"], routes: [] }]);
+  const poller = createOccupancyPoller({ fetchImpl: async () => payload([goodRow]) });
+  try {
+    await poller.tick();
+    const read = fs.readFileSync;
+    let reads = 0;
+    fs.readFileSync = function (file, ...args) {
+      if (file === helpersFile) reads += 1;
+      return read.call(this, file, ...args);
+    };
+    try {
+      poller.projection();
+      poller.projection();
+      assert.equal(reads, 0, "snapshots must use the cached configuration");
+    } finally { fs.readFileSync = read; }
+    fs.writeFileSync(helpersFile, "{broken");
+    assert.doesNotThrow(() => poller.projection());
+    await poller.tick();
+    assert.equal(poller.caches().get("mac").rows.length, 1);
+    writeHelpers([]);
+    await poller.tick();
+    assert.equal(poller.caches().size, 0, "a repaired config must take effect");
+  } finally { await poller.stop(); }
+});
+
+test("corrupt helper config cannot escape polling or core snapshots", async () => {
+  writeHelpers([{ id: "mac", enabled: true, url: "http://127.0.0.1/occupancy", harnesses: ["opencode"], routes: [] }]);
+  const poller = createOccupancyPoller({ fetchImpl: async () => payload([]) });
+  try {
+    await poller.tick();
+    fs.writeFileSync(helpersFile, "{broken");
+    assert.doesNotThrow(() => poller.projection());
+    await poller.tick();
+    assert.equal(poller.health().get("mac").coverage, "supported");
+  } finally { writeHelpers([]); await poller.stop(); }
+});
+
+test("a disconnected helper cannot stall a healthy neighbor or the next refresh", { timeout: 3000 }, async (t) => {
+  const http = await import("node:http");
+  const { fetchHelper } = await import("../policy.js");
+  const server = http.createServer((req, res) => {
+    if (req.url === "/broken") {
+      res.writeHead(200, { "content-length": "10000" });
+      res.write('{"rows":[');
+      setTimeout(() => res.destroy(), 10);
+    } else res.end(JSON.stringify(payload([goodRow])));
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  t.after(() => { server.closeAllConnections(); server.close(); });
+  const base = `http://127.0.0.1:${server.address().port}`;
+  writeHelpers([
+    { id: "broken", url: `${base}/broken`, harnesses: ["opencode"], routes: [] },
+    { id: "healthy", url: `${base}/good`, harnesses: ["opencode"], routes: [] },
+  ]);
+  const poller = createOccupancyPoller({ fetchImpl: (url, opts) => fetchHelper(url, { ...opts, timeoutMs: 1000 }) });
+  t.after(() => poller.stop());
+  for (let i = 0; i < 2; i++) {
+    await poller.tick();
+    assert.equal(poller.health().get("broken").coverage, "unavailable");
+    assert.equal(poller.health().get("healthy").coverage, "supported");
+    assert.equal(poller.caches().get("healthy").rows.length, 1);
+  }
+});
+
+test("a damaged config is never overwritten by helper mutations", async () => {
+  const { loadHelpers, replaceHelpers, removeHelper } = await import("../sources.js");
+  writeHelpers([{ id: "mac", url: "http://127.0.0.1/occupancy", harnesses: ["omp"], routes: [] }]);
+  loadHelpers();
+  fs.writeFileSync(helpersFile, "{broken");
+  try {
+    assert.equal(loadHelpers()[0].id, "mac");
+    assert.throws(() => replaceHelpers([]), /unreadable/);
+    assert.throws(() => removeHelper("mac"), /unreadable/);
+    assert.equal(fs.readFileSync(helpersFile, "utf8"), "{broken");
+  } finally { writeHelpers([]); }
+});
+
+test("cold corrupt config starts empty and fallback never crosses config paths", async () => {
+  const { loadHelpers } = await import("../sources.js");
+  const other = path.join(root, "other-helpers.json");
+  writeHelpers([{ id: "mac", url: "http://127.0.0.1/occupancy", harnesses: ["omp"], routes: [] }]);
+  const known = loadHelpers();
+  known[0].id = "mutated-copy";
+  fs.writeFileSync(helpersFile, "{broken");
+  assert.equal(loadHelpers()[0].id, "mac", "callers cannot mutate the last good cache");
+  fs.writeFileSync(other, "{broken");
+  process.env.OCCUPANCY_HELPERS_JSON_PATH = other;
+  try {
+    assert.deepEqual(loadHelpers(), [], "a new config path must not reuse another path's helpers");
+    const cold = createOccupancyPoller();
+    assert.doesNotThrow(() => cold.projection());
+  } finally {
+    process.env.OCCUPANCY_HELPERS_JSON_PATH = helpersFile;
+    writeHelpers([]);
+  }
+});

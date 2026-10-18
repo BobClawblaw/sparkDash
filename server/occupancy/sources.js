@@ -13,6 +13,8 @@ import { parseHelperUrl } from "./policy.js";
 const ID_RE = /^[a-z][a-z0-9-]{0,63}$/;
 const MAX_HELPERS = 20;
 const MAX_ROUTES = 50;
+let lastGood = { path: null, helpers: [] };
+let warnedPath = null;
 
 function status(code, message) {
   const err = new Error(message);
@@ -29,17 +31,32 @@ function readFileConfig() {
   try {
     const raw = fs.readFileSync(helpersPath(), "utf8");
     const parsed = JSON.parse(raw);
-    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {};
+    if (!parsed || typeof parsed !== "object" || !Array.isArray(parsed.helpers)) {
+      throw new Error("Invalid helpers config");
+    }
+    return parsed;
   } catch (err) {
     if (err.code === "ENOENT") return { helpers: [] };
     throw status(500, "Occupancy helper config is unreadable");
   }
 }
 
-export function loadHelpers() {
-  const body = readFileConfig();
-  const list = Array.isArray(body.helpers) ? body.helpers : [];
-  return list.map((item) => normalizeStored(item)).filter(Boolean);
+export function loadHelpers({ strict = false } = {}) {
+  const file = helpersPath();
+  if (lastGood.path !== file) lastGood = { path: file, helpers: [] };
+  try {
+    const body = readFileConfig();
+    lastGood = { path: file, helpers: body.helpers.map(normalizeStored).filter(Boolean) };
+    warnedPath = null;
+  } catch (err) {
+    // Writes must never replace a damaged file using a cached configuration.
+    if (strict) throw err;
+    if (warnedPath !== file) {
+      console.warn("Occupancy helper config is unreadable; retaining last valid configuration. Repair the helper config file.");
+      warnedPath = file;
+    }
+  }
+  return structuredClone(lastGood.helpers);
 }
 
 function normalizeStored(raw) {
@@ -75,7 +92,7 @@ export function publicHelpers() {
  * token write back.
  */
 export function replaceHelpers(input, { sparks = [] } = {}) {
-  const current = loadHelpers();
+  const current = loadHelpers({ strict: true });
   const previousTokens = new Map(loadHelperTokens());
   const next = normalizeReplacement(input, current, sparks);
   const tokens = nextTokens(current, next, previousTokens);
@@ -104,7 +121,7 @@ export function replaceHelpers(input, { sparks = [] } = {}) {
 }
 
 export function removeHelper(id) {
-  const current = loadHelpers();
+  const current = loadHelpers({ strict: true });
   if (!current.some((helper) => helper.id === id)) throw status(404, "Helper not found");
   return replaceHelpers(
     current.filter((helper) => helper.id !== id).map((helper) => ({ ...helper })),

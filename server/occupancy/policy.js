@@ -52,33 +52,42 @@ export async function fetchHelper(rawUrl, { token = "", allowlist, lookup = dns.
   return normalizeOccupancyPayload(body);
 }
 
-export function normalizeOccupancyPayload(body, now = Date.now()) {
-  if (!body || typeof body !== "object" || Array.isArray(body)) {
-    throw status(502, "Helper response was not an occupancy object");
+export function normalizeOccupancyPayload(body) {
+  if (!body || typeof body !== "object" || Array.isArray(body) ||
+      body.schemaVersion !== 1 || typeof body.observedAt !== "number" ||
+      !Number.isFinite(body.observedAt) || body.observedAt < 0 ||
+      !body.adapters || typeof body.adapters !== "object" || Array.isArray(body.adapters) ||
+      !Array.isArray(body.rows)) {
+    throw status(502, "Helper response was not a valid occupancy envelope");
   }
   const adapters = {};
-  const rawAdapters = body.adapters && typeof body.adapters === "object" ? body.adapters : {};
+  const rawAdapters = body.adapters;
   for (const id of HARNESS_IDS) {
     const item = rawAdapters[id];
-    if (!item || typeof item !== "object") continue;
+    if (!Object.hasOwn(rawAdapters, id)) continue;
+    if (!item || typeof item !== "object" || Array.isArray(item) ||
+        !COVERAGE.includes(item.coverage) || typeof item.stale !== "boolean" ||
+        !Number.isInteger(item.rows) || item.rows < 0 ||
+        (item.error != null && typeof item.error !== "string")) {
+      throw status(502, "Helper response had an invalid occupancy adapter summary");
+    }
     adapters[id] = {
-      coverage: COVERAGE.includes(item.coverage) ? item.coverage : "unavailable",
-      stale: Boolean(item.stale),
-      rows: Number.isFinite(Number(item.rows)) ? Number(item.rows) : 0,
+      coverage: item.coverage,
+      stale: item.stale,
+      rows: item.rows,
       error: typeof item.error === "string" && item.error ? item.error.slice(0, 200) : null,
     };
   }
-  const rawRows = Array.isArray(body.rows) ? body.rows : [];
+  const rawRows = body.rows;
   const rows = [];
   for (const raw of rawRows) {
     if (rows.length >= ROW_CAP) break;
     const row = normalizeRow(raw);
     if (row) rows.push(row);
   }
-  const observed = Number(body.observedAt);
   return {
     schemaVersion: 1,
-    observedAt: Number.isFinite(observed) ? observed : now,
+    observedAt: body.observedAt,
     adapters,
     rows,
     truncated: rawRows.length > ROW_CAP,

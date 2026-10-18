@@ -974,6 +974,10 @@ node scripts/occupancy-helper/index.js
 
 `OCCUPANCY_ADAPTERS` lists only the harnesses you enabled. Hermes reads `HERMES_STATE_DIR` (it does not launch `hermes-acp`, because that list path can write). DeepSeek Harness reads `DSH_WEB_URL` (default `http://127.0.0.1:3080`). A helper bound to anything other than loopback requires `OCCUPANCY_TOKEN`, and it refuses `0.0.0.0` and `::`. A helper hostname that is not loopback must be listed in `SPARKDASH_HELPER_HOSTS`.
 
+A missing ACP command marks that adapter unavailable while the helper keeps serving its cache. Adapter subprocesses keep their harness configuration but do not receive `OCCUPANCY_TOKEN`. ACP stdout frames are capped at 2,000,000 bytes, including unfinished lines; exceeding the cap closes that bridge and retains any previous rows as stale. Diagnostic RPC history retains only the latest 64 method names.
+
+Each dashboard helper request has an 8-second deadline, including its response body. Disconnects, oversized responses and malformed occupancy replies fail that helper's refresh. Replies must carry the helper's existing version-1 envelope (`schemaVersion`, numeric `observedAt`, `adapters`, and `rows`). Dashboard snapshots use cached helper configuration; a corrupt config keeps the last valid configuration until repaired, logs a warning, and cannot be overwritten through helper mutations.
+
 ACP rows are metadata only: they can look recent, and they are never labeled Generating or Stalled. Those labels are reserved for Hermes and DeepSeek Harness when the adapter itself reports a running session. A row with no timestamp stays in the list and stays unlabeled. Sessions with no matching route stay off the cards.
 
 ### Environment variables

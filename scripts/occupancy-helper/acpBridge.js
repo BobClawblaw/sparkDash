@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import { adapterEnv } from "./adapterEnv.js";
 
 const ALLOWED_METHODS = new Set(["initialize", "session/list"]);
 const PAGE_CAP = 8;
@@ -6,6 +7,7 @@ const ROW_CAP = 500;
 const BYTE_CAP = 2_000_000;
 const TIME_CAP_MS = 20_000;
 const RPC_TIMEOUT_MS = 14_000;
+const SENT_CAP = 64;
 
 /**
  * One persistent ACP metadata bridge. initialize + session/list only.
@@ -20,11 +22,12 @@ export function createAcpBridge({
   pageCap = PAGE_CAP,
   rowCap = ROW_CAP,
   byteCap = BYTE_CAP,
+  stdoutCap = BYTE_CAP,
   timeCapMs = TIME_CAP_MS,
 } = {}) {
   let generation = 0;
   let child = null;
-  let buffer = "";
+  let buffer = Buffer.alloc(0);
   let nextId = 1;
   let initialized = false;
   let blocked = null;
@@ -65,9 +68,9 @@ export function createAcpBridge({
       });
     } catch (err) {
       if (gen !== generation) return current();
+      closeChild();
       if (err?.code === "unsupported") {
         blocked = "unsupported";
-        closeChild();
         publish(gen, {
           coverage: "unsupported",
           stale: false,
@@ -147,13 +150,13 @@ export function createAcpBridge({
   function mapRow(row) {
     if (!row || typeof row !== "object") return null;
     const sessionId = typeof row.sessionId === "string" ? row.sessionId.trim() : "";
-    if (!sessionId) return null;
+    if (!sessionId || sessionId.length > 200) return null;
     return {
       harness,
       sessionId,
-      title: typeof row.title === "string" ? row.title : "",
-      cwd: typeof row.cwd === "string" ? row.cwd : "",
-      updatedAt: typeof row.updatedAt === "string" ? row.updatedAt : "",
+      title: typeof row.title === "string" ? row.title.slice(0, 200) : "",
+      cwd: typeof row.cwd === "string" ? row.cwd.slice(0, 500) : "",
+      updatedAt: typeof row.updatedAt === "string" ? row.updatedAt.slice(0, 64) : "",
       activity: "unknown",
       activityProvenance: "none",
       origin: null,
@@ -164,14 +167,16 @@ export function createAcpBridge({
   function startChild(gen) {
     closeChild();
     initialized = false;
-    buffer = "";
+    buffer = Buffer.alloc(0);
     const proc = openProcess(argv);
     if (gen !== generation) {
       killProcess(proc);
       throw new Error("bridge stopped");
     }
     child = proc;
-    child.stdout?.on?.("data", (chunk) => onStdout(chunk));
+    child.stdout?.on?.("data", (chunk) => {
+      if (child === proc) onStdout(chunk);
+    });
     child.stderr?.on?.("data", () => {
       /* drained; startup output can contain paths and is not logged */
     });
@@ -182,17 +187,33 @@ export function createAcpBridge({
         rejectWaiters(new Error("ACP bridge exited"));
       }
     });
+    const onError = () => {
+      if (child !== proc) return;
+      rejectWaiters(new Error("ACP adapter process failed; check the configured command"));
+      closeChild();
+    };
+    child.on?.("error", onError);
+    child.stdin?.on?.("error", onError);
     return Promise.resolve();
   }
 
   function onStdout(chunk) {
-    buffer += chunk.toString("utf8");
-    let nl = buffer.indexOf("\n");
-    while (nl >= 0) {
-      const line = buffer.slice(0, nl).trim();
-      buffer = buffer.slice(nl + 1);
+    const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+    let offset = 0;
+    while (offset < bytes.length) {
+      const nl = bytes.indexOf(10, offset);
+      const end = nl < 0 ? bytes.length : nl;
+      if (buffer.length + end - offset > stdoutCap) {
+        rejectWaiters(new Error("ACP stdout exceeded the frame size cap"));
+        closeChild();
+        return;
+      }
+      buffer = Buffer.concat([buffer, bytes.subarray(offset, end)]);
+      if (nl < 0) return;
+      const line = buffer.toString("utf8").trim();
+      buffer = Buffer.alloc(0);
       if (line) dispatch(line);
-      nl = buffer.indexOf("\n");
+      offset = nl + 1;
     }
   }
 
@@ -233,6 +254,7 @@ export function createAcpBridge({
     if (gen !== generation || !child) return Promise.reject(new Error("bridge stopped"));
     const id = nextId++;
     sent.push(method);
+    if (sent.length > SENT_CAP) sent.shift();
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
         waiters.delete(id);
@@ -267,6 +289,7 @@ export function createAcpBridge({
     const proc = child;
     child = null;
     initialized = false;
+    buffer = Buffer.alloc(0);
     rejectWaiters(new Error("bridge stopped"));
     killProcess(proc);
   }
@@ -300,7 +323,7 @@ function killProcess(proc) {
 }
 
 export function defaultOpenProcess(argv) {
-  return spawn(argv[0], argv.slice(1), { stdio: ["pipe", "pipe", "pipe"], detached: true });
+  return spawn(argv[0], argv.slice(1), { env: adapterEnv(), stdio: ["pipe", "pipe", "pipe"], detached: true });
 }
 
 /** Operator env: a JSON array, or a whitespace-separated argv. No shell. */
