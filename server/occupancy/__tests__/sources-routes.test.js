@@ -108,6 +108,8 @@ describe("helper config and routes", { concurrency: 1 }, () => {
     assert.equal(open.status, 200);
     const denied = await request(app, "POST", "/api/occupancy/helpers/check", { url: "http://127.0.0.1/occupancy" });
     assert.equal(denied.status, 401);
+    assert.equal((await request(app, "PUT", "/api/occupancy/helpers", [])).status, 401);
+    assert.equal((await request(app, "DELETE", "/api/occupancy/helpers/mac")).status, 401);
     const allowed = await request(
       app,
       "POST",
@@ -197,3 +199,21 @@ function request(app, method, urlPath, body, headers = {}) {
     });
   });
 }
+
+test("helper PUT and DELETE share a principal mutation budget before writes or reconfiguration", async () => {
+  const app = express();
+  app.use(express.json());
+  app.use((req, _res, next) => { req.principal = { id: req.headers['x-fixture-principal'] || 'mutation-fixture' }; next(); });
+  let changes = 0;
+  registerOccupancyRoutes(app, { listSparks: () => sparks, poller: { reconfigure() { changes++; } } });
+  for (let i = 0; i < 30; i++) {
+    const result = i % 2 ? await request(app, 'DELETE', '/api/occupancy/helpers/mac') : await request(app, 'PUT', '/api/occupancy/helpers', [helperBody()]);
+    assert.equal(result.status, 200);
+  }
+  for (const method of ['PUT', 'DELETE']) {
+    const result = await request(app, method, method === 'PUT' ? '/api/occupancy/helpers' : '/api/occupancy/helpers/mac', []);
+    assert.equal(result.status, 429);
+  }
+  assert.equal(changes, 30);
+  assert.equal((await request(app, 'PUT', '/api/occupancy/helpers', [], { 'x-fixture-principal': 'other-fixture' })).status, 200);
+});

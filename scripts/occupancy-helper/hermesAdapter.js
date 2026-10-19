@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
-import { spawnSync } from "node:child_process";
+import { execFile } from "node:child_process";
 import { adapterEnv } from "./adapterEnv.js";
 
 /**
@@ -8,10 +8,11 @@ import { adapterEnv } from "./adapterEnv.js";
  * path backfills cwd into the database. sessions.json wins; state.db is a
  * mode=ro fallback when the JSON store is absent.
  */
-export function loadHermes({
+export async function loadHermes({
   stateDir,
   readFile = (file) => fs.readFileSync(file, "utf8"),
   readDb,
+  signal,
 } = {}) {
   const dir = stateDir ? path.resolve(stateDir) : "";
   if (!dir) {
@@ -35,15 +36,15 @@ export function loadHermes({
     dbExists = false;
   }
   if (!dbExists) {
-    return { coverage: "supported", stale: false, error: null, rows: [] };
+    return { coverage: "unavailable", stale: false, error: "No Hermes session store found", rows: [] };
   }
   const reader = readDb || readHermesDb;
   try {
-    const rows = reader(dbPath);
+    const rows = await reader(dbPath, { signal });
     if (!Array.isArray(rows)) {
       return { coverage: "partial", stale: false, error: "state.db has no readable sessions table", rows: [] };
     }
-    return { coverage: rows.length ? "supported" : "partial", stale: false, error: rows.length ? null : "state.db has no readable sessions table", rows };
+    return { coverage: "supported", stale: false, error: null, rows };
   } catch (err) {
     return { coverage: "partial", stale: false, error: err.message || "state.db could not be read", rows: [] };
   }
@@ -162,7 +163,7 @@ function parseOrigin(raw) {
 }
 
 /** Fixed read-only query. The path is a local file, never SQL from the dashboard. */
-export function readHermesDb(dbPath) {
+export async function readHermesDb(dbPath, { signal } = {}) {
   const script = `
 import json, sqlite3, sys
 path = sys.argv[1]
@@ -200,11 +201,20 @@ for record in con.execute(query):
     out.append(item)
 print(json.dumps({"rows": out}))
 `;
-  const result = spawnSync("python3", ["-c", script, dbPath], { env: adapterEnv(), encoding: "utf8", timeout: 8_000 });
-  if (result.error || result.status !== 0) {
-    throw new Error("state.db could not be read");
-  }
-  const parsed = JSON.parse(result.stdout || "{}");
+  const stdout = await new Promise((resolve, reject) => {
+    if (signal?.aborted) { reject(new Error("state.db read cancelled")); return; }
+    const onAbort = () => child.kill("SIGKILL");
+    const child = execFile("python3", ["-c", script, dbPath], {
+      env: adapterEnv(), encoding: "utf8", timeout: 8_000,
+      maxBuffer: 2_000_000, killSignal: "SIGKILL",
+    }, (error, stdout) => {
+      signal?.removeEventListener("abort", onAbort);
+      if (error) reject(new Error("state.db could not be read"));
+      else resolve(stdout);
+    });
+    signal?.addEventListener("abort", onAbort, { once: true });
+  });
+  const parsed = JSON.parse(stdout || "{}");
   if (!Array.isArray(parsed.rows)) return null;
   return parsed.rows.map((item) =>
     mapHermesSession({

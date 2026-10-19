@@ -108,3 +108,48 @@ test("all-interface and unauthenticated reachable binds are refused before any s
     /OCCUPANCY_TOKEN/
   );
 });
+
+test("a stalled DSH slot cannot block later ACP refreshes and close aborts its request", { timeout: 1500 }, async () => {
+  let signal;
+  let lists = 0;
+  const helper = createOccupancyHelper({ adapters: "opencode,dsh", readProfiles: false,
+    fetchFn: async (_url, opts) => { signal = opts.signal; return new Promise(() => {}); },
+    openProcess: () => {
+      const proc = acpProcess();
+      const write = proc.stdin.write;
+      proc.stdin.write = chunk => { if (String(chunk).includes('session/list')) lists++; return write(chunk); };
+      return proc;
+    },
+  });
+  try {
+    void helper.refresh();
+    await new Promise(resolve => setTimeout(resolve, 20));
+    void helper.refresh();
+    await new Promise(resolve => setTimeout(resolve, 20));
+    assert.ok(lists >= 2, "healthy ACP must refresh beside hung DSH");
+    await helper.close();
+    assert.equal(signal.aborted, true);
+  } finally { await helper.close(); }
+});
+
+test("DSH timeout preserves stale rows and a later successful refresh replaces them", async () => {
+  let mode = 'good';
+  const helper = createOccupancyHelper({ adapters: 'dsh', dshTimeoutMs: 25, readProfiles: false,
+    fetchFn: async (url) => {
+      if (mode === 'stall') return new Promise(() => {});
+      return new Response(JSON.stringify({ result: { ok: true, value: url.endsWith('session.list') ? { items: mode === 'empty' ? [] : [{ sessionId: 'one' }] } : {} } }));
+    },
+  });
+  try {
+    await helper.refresh();
+    assert.equal(helper.payload().rows.length, 1);
+    mode = 'stall';
+    await helper.refresh();
+    assert.equal(helper.payload().adapters.dsh.stale, true);
+    assert.equal(helper.payload().rows.length, 1);
+    mode = 'empty';
+    await helper.refresh();
+    assert.equal(helper.payload().adapters.dsh.stale, false);
+    assert.equal(helper.payload().rows.length, 0);
+  } finally { await helper.close(); }
+});

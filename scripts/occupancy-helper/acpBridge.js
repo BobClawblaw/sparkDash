@@ -309,17 +309,20 @@ function emptyCache() {
 }
 
 function killProcess(proc) {
-  if (!proc || proc.killed) return;
-  try {
-    if (proc.pid) process.kill(-proc.pid, "SIGTERM");
-    else proc.kill?.("SIGTERM");
-  } catch {
+  if (!proc) return;
+  const send = (signal) => {
     try {
-      proc.kill?.("SIGTERM");
+      if (proc.pid) process.kill(-proc.pid, signal);
+      else proc.kill?.(signal);
     } catch {
-      /* already gone */
+      try { proc.kill?.(signal); } catch { /* already gone */ }
     }
-  }
+  };
+  send("SIGTERM");
+  // A delivered signal (child.killed) does not mean the child exited. The
+  // detached group belongs to this bridge, including surviving descendants.
+  // Keep the grace timer alive even if a descendant closed all inherited pipes.
+  setTimeout(() => send("SIGKILL"), 250);
 }
 
 export function defaultOpenProcess(argv) {

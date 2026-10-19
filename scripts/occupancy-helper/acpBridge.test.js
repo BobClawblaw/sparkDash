@@ -344,6 +344,7 @@ test("oversized stdout terminates the owned real child and permits a fresh child
   let closed;
   let starts = 0;
   const script = `
+    process.on("SIGTERM", () => {});
     const lines = require('node:readline').createInterface({ input: process.stdin });
     lines.on('line', line => {
       const msg = JSON.parse(line);

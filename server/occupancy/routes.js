@@ -18,6 +18,12 @@ function sendError(res, err) {
  * so connection checks cannot bypass the configured policy.
  */
 export function registerOccupancyRoutes(app, { poller, listSparks, fetchImpl = fetchHelper, allowlist = helperAllowlist } = {}) {
+  const allowMutation = createRateLimiter(30, 60_000);
+  function mutationAllowed(req, res) {
+    if (allowMutation(principalKey(req))) return true;
+    res.status(429).json({ error: "Too many helper changes" });
+    return false;
+  }
   app.get("/api/occupancy/helpers", (_req, res) => {
     try {
       res.json({ helpers: publicHelpers() });
@@ -27,6 +33,7 @@ export function registerOccupancyRoutes(app, { poller, listSparks, fetchImpl = f
   });
 
   app.put("/api/occupancy/helpers", (req, res) => {
+    if (!mutationAllowed(req, res)) return;
     try {
       const sparks = typeof listSparks === "function" ? listSparks() : [];
       const helpers = replaceHelpers(req.body, { sparks });
@@ -38,6 +45,7 @@ export function registerOccupancyRoutes(app, { poller, listSparks, fetchImpl = f
   });
 
   app.delete("/api/occupancy/helpers/:id", (req, res) => {
+    if (!mutationAllowed(req, res)) return;
     try {
       const helpers = removeHelper(req.params.id);
       poller?.reconfigure();

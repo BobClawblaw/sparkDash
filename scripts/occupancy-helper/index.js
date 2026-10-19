@@ -28,7 +28,6 @@ export function createOccupancyHelper(opts = {}) {
   const refreshMs = Number(opts.refreshMs ?? env.OCCUPANCY_REFRESH_MS ?? REFRESH_MS);
   const slots = new Map();
   let timer = null;
-  let refreshing = null;
   let server = null;
 
   for (const id of adapters) {
@@ -52,14 +51,8 @@ export function createOccupancyHelper(opts = {}) {
   }
 
   async function refresh() {
-    if (refreshing) return refreshing;
-    refreshing = (async () => {
-      await Promise.all([...slots.values()].map((slot) => slot.refresh()));
-      return payload();
-    })().finally(() => {
-      refreshing = null;
-    });
-    return refreshing;
+    await Promise.all([...slots.values()].map((slot) => slot.refresh()));
+    return payload();
   }
 
   function start() {
@@ -152,37 +145,48 @@ function createSlot(id, opts, env) {
   }
   let cache = { coverage: "unavailable", stale: false, error: null, observedAt: null, rows: [] };
   let generation = 0;
+  let inflight = null;
+  let controller = null;
   return {
     current: () => cache,
-    async refresh() {
-      const gen = generation;
-      const result = id === "hermes"
-        ? loadHermes({ stateDir: opts.hermesStateDir ?? env.HERMES_STATE_DIR, readFile: opts.readFile, readDb: opts.readDb })
-        : await loadDsh({
-            webUrl: opts.dshWebUrl ?? env.DSH_WEB_URL,
-            profileDir: opts.dshProfileDir ?? env.DSH_PROFILE_DIR,
-            fetchFn: opts.fetchFn,
-            readProfiles: opts.readProfiles,
-          });
-      if (gen !== generation) return;
-      if (result.coverage === "unavailable" && cache.rows.length > 0) {
-        cache = { ...cache, stale: true, coverage: "partial", error: result.error };
-        return;
-      }
-      cache = {
-        coverage: result.coverage,
-        stale: false,
-        error: result.error,
-        observedAt: Date.now(),
-        rows: result.rows,
-      };
+    refresh() {
+      if (inflight) return inflight;
+      controller = new AbortController();
+      inflight = run(controller.signal).finally(() => { inflight = null; });
+      return inflight;
     },
     stop() {
       generation += 1;
+      controller?.abort();
       cache = { coverage: "unavailable", stale: false, error: null, observedAt: null, rows: [] };
     },
     spawns: () => 0,
   };
+  async function run(signal) {
+    const gen = generation;
+    const result = id === "hermes"
+      ? await loadHermes({ signal, stateDir: opts.hermesStateDir ?? env.HERMES_STATE_DIR, readFile: opts.readFile, readDb: opts.readDb })
+      : await loadDsh({
+          webUrl: opts.dshWebUrl ?? env.DSH_WEB_URL,
+          profileDir: opts.dshProfileDir ?? env.DSH_PROFILE_DIR,
+          fetchFn: opts.fetchFn,
+          readProfiles: opts.readProfiles,
+          signal,
+          timeoutMs: opts.dshTimeoutMs,
+        });
+    if (gen !== generation) return;
+    if (result.coverage === "unavailable" && cache.rows.length > 0) {
+      cache = { ...cache, stale: true, coverage: "partial", error: result.error };
+      return;
+    }
+    cache = {
+      coverage: result.coverage,
+      stale: false,
+      error: result.error,
+      observedAt: Date.now(),
+      rows: result.rows,
+    };
+  }
 }
 
 function selectedAdapters(value) {

@@ -340,3 +340,18 @@ test("trickled bodies have an absolute deadline, abort settles, and all requests
   await bothClosed;
   assert.equal(closed, 2);
 });
+
+test("a bearer is refused over LAN HTTP before any request and loopback HTTP remains allowed", async () => {
+  let lookups = 0;
+  await assert.rejects(fetchHelper("http://lan.example/occupancy", { token: "fixture", allowlist: new Set(["lan.example"]),
+    lookup: async () => { lookups++; return [{ address: "10.0.0.4", family: 4 }]; },
+  }), /HTTPS/);
+  assert.equal(lookups, 1);
+  const server = await listen((req, res) => {
+    assert.equal(req.headers.authorization, "Bearer fixture");
+    res.end(JSON.stringify({ schemaVersion: 1, observedAt: 1, adapters: {}, rows: [] }));
+  });
+  try {
+    assert.equal((await fetchHelper(`http://127.0.0.1:${server.address().port}`, { token: "fixture" })).schemaVersion, 1);
+  } finally { server.close(); }
+});

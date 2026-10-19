@@ -40,6 +40,10 @@ export function parseHelperUrl(raw) {
 export async function fetchHelper(rawUrl, { token = "", allowlist, lookup = dns.lookup, signal, timeoutMs, maxBytes } = {}) {
   const parsed = parseHelperUrl(rawUrl);
   const addresses = await assertAllowedTarget(parsed.hostname, allowlist ?? helperAllowlist(), { lookup });
+  if (token && parsed.protocol === "http:" && addresses.some(address =>
+    !/^127\./.test(address) && address !== "::1" && !/^::ffff:127\./i.test(address))) {
+    throw status(400, "Helper bearer tokens require HTTPS outside loopback");
+  }
   const headers = {};
   if (token) headers.authorization = `Bearer ${token}`;
   const response = await fetchPinned(parsed, { addresses, headers, signal, timeoutMs, maxBytes });
