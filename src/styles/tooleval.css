@@ -909,6 +909,16 @@
   height: 260px;
   max-height: none;
 }
+.te-scn-list.is-open {
+  max-height: 70vh;
+}
+.te-scn-list.is-live.is-open {
+  height: 70vh;
+}
+.te-scn-toggle {
+  display: flex;
+  justify-content: flex-end;
+}
 .te-scn-list li,
 .te-events li {
   display: flex;

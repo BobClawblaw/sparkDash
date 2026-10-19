@@ -54,6 +54,7 @@ import {
 } from "./llmtokens/LlmTokenRuntime.js";
 import { closeLlmStreamAgent } from "./collectors/LlmStreaming.js";
 import { compareSemver, getLatestRelease } from "./collectors/HermesReleases.js";
+import { createModelPricesHandler } from "./prices/ModelPrices.js";
 import { ALERTS_JSON_PATH, FLEET_ENERGY_JSON_PATH, FLEET_ENERGY_MONTHLY_JSON_PATH, MAX_ACTIVE_BENCH_JOBS, METRICS_HISTORY_JSON_PATH } from "./config.js";
 import { createAlertsRuntime, registerAlertRoutes } from "./alerts/runtime.js";
 import { FleetEnergyTracker } from "./energy/FleetEnergyTracker.js";
@@ -609,6 +610,7 @@ function clientKey(req) {
 // ─── REST API ────────────────────────────────────────────
 registerFleetEnergyRoute(app, fleetEnergyTracker);
 registerLlmTokenTotalsRoute(app, llmTokenLedger);
+app.get("/api/model-prices", createModelPricesHandler());
 registerAlertRoutes(app, alertsRuntime);
 
 // Never return SSH passwords in any response
@@ -2331,7 +2333,6 @@ wss.on("connection", (ws) => {
 
 // ─── Broadcast snapshot (dynamic interval) ────────────────
 let broadcastTimer = null;
-let _lastBroadcastPayload = null;
 
 /** Build the snapshot payload string. Centralized so broadcast + refresh share it. */
 function buildSnapshotPayload(sparks = orderedSnapshots()) {
@@ -2349,9 +2350,8 @@ function buildSnapshotPayload(sparks = orderedSnapshots()) {
 
 /**
  * Send a payload to every open WS client.
- * - Drops clients whose send queue is backlogged (>1 MB) to avoid unbounded
- *   buffering on slow/flaky connections (e.g. phone over spotty WiFi).
- * - Returns the payload so callers can compare against the previous broadcast.
+ * Drops clients whose send queue is backlogged (>1 MB) to avoid unbounded
+ * buffering on slow/flaky connections (e.g. phone over spotty WiFi).
  */
 function broadcastPayload(payload) {
   wss.clients.forEach((client) => {
@@ -2373,14 +2373,12 @@ function broadcastPayload(payload) {
 }
 
 /**
- * Force an immediate broadcast, ignoring the diff cache.
+ * Broadcast now instead of on the next tick.
  * Used after a user action (manual refresh / hermes check / update) so the
- * UI reflects the result right away instead of on the next poll tick.
+ * UI reflects the result right away.
  */
 function forceBroadcast() {
-  const payload = buildSnapshotPayload();
-  _lastBroadcastPayload = payload;
-  broadcastPayload(payload);
+  broadcastPayload(buildSnapshotPayload());
 }
 
 function startBroadcast() {
@@ -2388,14 +2386,15 @@ function startBroadcast() {
   broadcastTimer = setInterval(() => {
     const sparks = orderedSnapshots();
     // Alerts are evaluated once per fleet snapshot, before it goes out, so the
-    // payload carries the alerts this very snapshot produced.
+    // payload carries the alerts this very snapshot produced. They run whether
+    // or not a dashboard is open.
     alertsRuntime.tick(sparks);
-    const payload = buildSnapshotPayload(sparks);
-    // Skip the broadcast entirely when nothing changed since the last tick.
-    // A 1s poll that produces identical snapshots becomes free for idle tabs.
-    if (_lastBroadcastPayload !== null && payload === _lastBroadcastPayload) return;
-    _lastBroadcastPayload = payload;
-    broadcastPayload(payload);
+    // Nobody is listening: skip serialising every unit's snapshot. A client that
+    // connects later gets a fresh one from the connection handler.
+    if (wss.clients.size === 0) return;
+    // Send every tick even when nothing changed. The UI treats snapshot arrival
+    // as its liveness signal and shows "Telemetry is stale" without it.
+    broadcastPayload(buildSnapshotPayload(sparks));
   }, interval);
 }
 
@@ -2404,7 +2403,6 @@ function restartBroadcast() {
     clearInterval(broadcastTimer);
     broadcastTimer = null;
   }
-  _lastBroadcastPayload = null; // force a fresh broadcast on the new cadence
   startBroadcast();
 }
 
@@ -2423,6 +2421,17 @@ if (!startupPreflight.fatal) {
     learnTailscaleName();
     setInterval(learnTailscaleName, 10 * 60 * 1000).unref();
   }
+  // A failed listen (port in use, address not available) must end the process.
+  // The WebSocket server's own error handler only logs it, and the broadcast
+  // timer would keep a process alive that never serves a request.
+  server.on("error", (err) => {
+    if (server.listening) {
+      console.error("[sparkDash] server error:", err?.message);
+      return;
+    }
+    console.error(`[sparkDash] cannot listen on ${BIND_HOST}:${PORT}: ${err?.message}`);
+    process.exit(1);
+  });
   server.listen(PORT, BIND_HOST, () => {
     console.log(`[sparkDash] server listening on http://${BIND_HOST}:${PORT}`);
     console.log(`[sparkDash] WebSocket endpoint ws://${BIND_HOST}:${PORT}/ws`);

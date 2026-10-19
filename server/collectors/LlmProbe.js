@@ -425,6 +425,11 @@ export class LlmProbe {
     this.mtpAcceptanceRate = null;
     this.slotState.clear();
     this.lastTokenCounts = { input: 0, output: 0 };
+    // The counters restart from zero, so the next poll may only seed them. The
+    // per-backend `dtSec < 10` guards do that when the probe clock is zero too;
+    // failed polls keep advancing it, which is how lifetime totals used to be
+    // reported as one interval's worth of tokens.
+    this.lastProbeTime = 0;
     this._tensorfoldSeeded = false;
     this._tensorfoldPrefillSeconds = null;
     this._tensorfoldPrevCached = null;
@@ -845,6 +850,12 @@ export class LlmProbe {
             const liveDecode = health?.live?.decode_tokens_per_second;
             const hasLiveDecode = liveDecode != null && Number.isFinite(Number(liveDecode));
             await this._applyTensorFoldMetrics(hasLiveDecode ? undefined : dtSec);
+          } else if (this.requestsWaiting == null) {
+            // A /health with token totals but no waiting count (TensorFold's Python engine) keeps
+            // its queue gauge in /metrics alone: poll it queue-only, so /health stays the authority
+            // for totals, rates, drafts and slots, and only the waiting gauge refreshes. A
+            // `live.waiting` the server reports itself is not overwritten.
+            await this._applyTensorFoldMetrics(undefined, true);
           }
         } else {
           this._applyTensorFoldHealth(null, dtSec);
@@ -1571,8 +1582,10 @@ export class LlmProbe {
    * Builds whose /health is only `{"status": "ok"}` (tensorfold-native) report counters here alone,
    * so decode tok/s comes from this poll-window diff.
    * @param {number} [dtSec]
+   * @param {boolean} [queueOnly=false] apply only the waiting gauge: for builds whose /health
+   * carries the totals but no waiting count, /metrics is still the queue's only source.
    */
-  async _applyTensorFoldMetrics(dtSec) {
+  async _applyTensorFoldMetrics(dtSec, queueOnly = false) {
     let txt;
     try {
       const res = await this._fetch(`${this.baseUrl}/metrics`);
@@ -1583,8 +1596,8 @@ export class LlmProbe {
     }
     if (typeof txt !== "string" || !txt.includes("tensorfold:")) return;
     const m = (name) => this._getPromMetric(txt, `tensorfold:${name}`);
-    const gen = m("generation_tokens_total");
-    const prompt = m("prompt_tokens_total");
+    const gen = queueOnly ? null : m("generation_tokens_total");
+    const prompt = queueOnly ? null : m("prompt_tokens_total");
     if (Number.isFinite(gen) && gen >= 0) this.totalOutputTokens = gen;
     if (Number.isFinite(prompt) && prompt >= 0) this.totalPromptTokens = prompt;
     // The total moves only when a request finishes; `generation_tokens_running` counts the
@@ -1600,15 +1613,15 @@ export class LlmProbe {
         this.generationTps = Math.max(0, Math.round(((produced - prev) / dtSec) * 100) / 100);
       }
     }
-    const running = m("requests_running");
+    const running = queueOnly ? null : m("requests_running");
     if (Number.isFinite(running) && running >= 0) {
       this.requestsRunning = Math.round(running);
       this.slotsActive = Math.round(running);
     }
     const waiting = m("requests_waiting");
     if (Number.isFinite(waiting) && waiting >= 0) this.requestsWaiting = Math.round(waiting);
-    const drafted = m("mtp_drafted_total");
-    const accepted = m("mtp_accepted_total");
+    const drafted = queueOnly ? null : m("mtp_drafted_total");
+    const accepted = queueOnly ? null : m("mtp_accepted_total");
     if (Number.isFinite(drafted) && drafted > 0 && Number.isFinite(accepted)) {
       this.mtpAcceptanceRate = Math.max(0, Math.min(1, accepted / drafted));
     }
@@ -2262,8 +2275,10 @@ export class LlmProbe {
             const dPrompted = prompted - lastState.prompted;
             this.slotState.set(slotId, { decoded, prompted });
             if (dtSec > 0 && dtSec < 10) {
-              totalGen += dDecoded / dtSec;
-              totalPrefill += dPrompted / dtSec;
+              // Clamp per slot: a slot that begins a new request counts down
+              // (its counters restart) and must not cancel another slot's progress.
+              totalGen += Math.max(0, dDecoded) / dtSec;
+              totalPrefill += Math.max(0, dPrompted) / dtSec;
             }
           }
 
