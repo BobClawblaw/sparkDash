@@ -547,11 +547,12 @@ function compareDelta(d: CompareDelta, suffix = ""): { text: string; tone: Share
 function compareSide(
   tag: "A" | "B",
   data: NormToolResult,
-  run: Pick<ToolEvalRun, "label" | "startedAt" | "model">
+  run: Pick<ToolEvalRun, "label" | "startedAt" | "model">,
+  sparkName?: string | null
 ): ShareCardCompareSide {
   const tier = scoreTier(data.score);
   return {
-    heading: `RUN ${tag} · ${run.label || shareCardDate(run.startedAt)}`,
+    heading: `RUN ${tag} · ${sparkName ? `${sparkName} · ` : ""}${run.label || shareCardDate(run.startedAt)}`,
     model: data.model || run.model || "",
     score: data.score,
     rating: data.rating?.replace(/[★☆]+/g, "").trim() || tier?.label || "",
@@ -572,10 +573,12 @@ export function buildToolEvalCompareShareCard(
   b: NormToolResult,
   runA: Pick<ToolEvalRun, "label" | "startedAt" | "model" | "baseUrl" | "options" | "type">,
   runB: Pick<ToolEvalRun, "label" | "startedAt" | "model" | "baseUrl" | "options" | "type">,
-  src: { sparkName?: string | null },
+  src: { sparkName?: string | null; sparkNameA?: string | null; sparkNameB?: string | null },
   now: number = Date.now()
 ): ShareCardModel {
   const cmp = compareToolResults(a, b);
+  // Runs from two Sparks: each side names its Spark and the card's host reads "spark1 vs spark3".
+  const cross = Boolean(src.sparkNameA && src.sparkNameB && src.sparkNameA !== src.sparkNameB);
   const head = (label: string) => cmp.headline.find((h) => h.label === label)!;
   const score = compareDelta(head("Score"));
   const stat = (label: string, d: CompareDelta, digits: number): ShareCardCompareStat | null => {
@@ -599,8 +602,8 @@ export function buildToolEvalCompareShareCard(
       : null;
   const caveats = configCaveats(runA, runB);
   const caveat = caveats.length ? `${caveats[0]}${caveats.length > 1 ? ` (+${caveats.length - 1} more)` : ""}` : "";
-  const sideA = compareSide("A", a, runA);
-  const sideB = compareSide("B", b, runB);
+  const sideA = compareSide("A", a, runA, cross ? src.sparkNameA : null);
+  const sideB = compareSide("B", b, runB, cross ? src.sparkNameB : null);
   return {
     toolEvalCompare: {
       a: sideA,
@@ -617,7 +620,7 @@ export function buildToolEvalCompareShareCard(
       caveat,
     },
     brand: "sparkDash",
-    host: src.sparkName || "",
+    host: cross ? `${src.sparkNameA} vs ${src.sparkNameB}` : src.sparkName || "",
     title: "Tool Eval Comparison",
     subtitle: "",
     chips: [],

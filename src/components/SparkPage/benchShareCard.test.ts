@@ -723,6 +723,16 @@ describe("tool eval comparison card", () => {
     expect(shareCardFileName(m, "tool-eval-compare")).toMatch(/^sparkdash-tool-eval-compare-spark-1-/);
   });
 
+  it("names both Sparks when the runs come from different ones", () => {
+    const m = buildToolEvalCompareShareCard(a(), b(), run, run, { sparkName: "spark-1", sparkNameA: "spark1", sparkNameB: "spark3" }, 0);
+    expect(m.host).toBe("spark1 vs spark3");
+    expect([m.toolEvalCompare!.a.heading, m.toolEvalCompare!.b.heading]).toEqual(["RUN A · spark1 · 2026-09-10", "RUN B · spark3 · 2026-09-10"]);
+    // Same Spark on both sides: no per-Spark naming.
+    const same = buildToolEvalCompareShareCard(a(), b(), run, run, { sparkName: "spark-1", sparkNameA: "spark1", sparkNameB: "spark1" }, 0);
+    expect(same.host).toBe("spark-1");
+    expect(same.toolEvalCompare!.a.heading).toBe("RUN A · 2026-09-10");
+  });
+
   it("says when the setups differ and keeps failures off the card", () => {
     const m = buildToolEvalCompareShareCard(a(), b(), run, { ...run, baseUrl: "http://y", model: "other" }, {}, 0);
     expect(m.status).toEqual({ label: "DIFFERENT SETUP", tone: "warn" });

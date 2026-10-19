@@ -286,6 +286,7 @@ function ToolEvalBench({ type, spark }: { type: string; spark: SparkSnapshot }) 
           <History
             sparkId={spark.id}
             sparkName={spark.name}
+            type={type}
             runs={runner.runs}
             error={runner.listError}
             followedId={followed?.run.id ?? null}
