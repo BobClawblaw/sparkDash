@@ -2311,9 +2311,15 @@ function broadcastPayload(payload) {
   });
 }
 
-/** Fleet entries with per-domain provenance, exactly what /metrics renders. */
-function mqttFleetEntries() {
-  return metricsEntries(registry.sparkIds.map((id) => monitors.get(id)));
+/**
+ * Hand the fleet to the MQTT bridge: entries with per-domain provenance,
+ * exactly what /metrics renders. Built only when MQTT is on, so the default
+ * (off) install pays nothing per tick; the publisher itself resends a topic
+ * only when its value changed.
+ */
+function publishMqttFleet() {
+  if (!getSettings().mqttEnabled) return;
+  mqttPublisher.publishFleet(metricsEntries(registry.sparkIds.map((id) => monitors.get(id))));
 }
 
 /**
@@ -2323,7 +2329,7 @@ function mqttFleetEntries() {
  */
 function forceBroadcast() {
   broadcastPayload(buildSnapshotPayload());
-  mqttPublisher.publishFleet(mqttFleetEntries());
+  publishMqttFleet();
 }
 
 function startBroadcast() {
@@ -2335,7 +2341,7 @@ function startBroadcast() {
     // or not a dashboard is open.
     alertsRuntime.tick(sparks);
     // MQTT subscribers are not dashboards, so publish before the no-client skip below.
-    mqttPublisher.publishFleet(mqttFleetEntries());
+    publishMqttFleet();
     // Nobody is listening: skip serialising every unit's snapshot. A client that
     // connects later gets a fresh one from the connection handler.
     if (wss.clients.size === 0) return;
