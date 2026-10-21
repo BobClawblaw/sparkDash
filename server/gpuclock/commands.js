@@ -394,9 +394,10 @@ export function buildApplyProgram({ minMHz, maxMHz, persist }, overrides = {}) {
     // A stale hook of either kind would re-apply the old cap at the next boot.
     '  drop_cron || fail cron-failed "the cap is applied until the next reboot, but the existing @reboot job could not be removed and will re-apply its own cap at boot"',
     '  if [ -f "$UNIT" ]; then',
-    // Stopping the old service resets the clocks (ExecStop), so the cap is applied again afterwards.
+    // Stopping the old service resets clocks and deletes the marker, so restore both afterwards.
     '    drop_service || { lgc >/dev/null 2>&1; fail service-failed "the cap is applied until the next reboot, but the existing boot service could not be removed and will re-apply its own cap at boot"; }',
     '    OUT=$(lgc 2>&1) || fail lgc-failed "nvidia-smi refused the clock cap: $(lgc_error "$OUT")"',
+    '    write_marker || fail marker-failed "could not record the cap"',
     "  fi",
     "else",
     '  write_marker || fail marker-failed "could not record the cap"',

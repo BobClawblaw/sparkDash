@@ -49,6 +49,11 @@ esac
     `#!/bin/sh
 echo "systemctl $*" >> ${calls}
 case "$1" in
+  stop|disable)
+    if [ "$*" = "stop ${UNIT_NAME}" ] || [ "$*" = "disable --now ${UNIT_NAME}" ]; then
+      # The unit's ExecStop resets clocks; ExecStopPost removes the cap marker.
+      rm -f ${lock} ${root}/run/${MARKER_FILE}
+    fi ;;
   restart) [ -f ${root}/restart_fails ] && exit 1 ;;
   is-enabled) [ -f ${root}/units/${UNIT_NAME} ] && echo enabled || echo disabled ;;
   is-active)
@@ -218,7 +223,7 @@ test("apply with the service: installs and enables the unit, which carries the c
   }
 });
 
-test("switching the service off removes the unit so the old cap is not re-applied at boot", () => {
+test("switching the service off removes the unit and preserves the live cap in status after stop cleanup", () => {
   const sb = sandbox();
   try {
     sb.run(buildApplyProgram({ minMHz: 0, maxMHz: 1800, persist: true }, sb.paths));
@@ -227,6 +232,10 @@ test("switching the service off removes the unit so the old cap is not re-applie
     assert.equal(sb.read(`units/${UNIT_NAME}`), null);
     assert.match(sb.calls(), /systemctl disable --now spark-gpu-clock-limit.service/);
     assert.equal(sb.read("lock").trim(), "0,2000");
+    const status = sb.run(buildStatusProgram(sb.paths));
+    assert.equal(status.CAP, "2000");
+    assert.equal(status.SVC_INSTALLED, "0");
+    assert.equal(res.PERSIST, "0");
   } finally {
     sb.cleanup();
   }
