@@ -713,6 +713,8 @@ app.delete("/api/sparks/:id", (req, res) => {
     launcherStatusCache.delete(req.params.id);
     unitHistory.remove(req.params.id);
     toolEvalManager.removeSpark(req.params.id);
+    // Clear its retained status/metrics topics so MQTT subscribers stop seeing it.
+    mqttPublisher.removeUnit(req.params.id);
     recordEvent({
       type: "spark.removed",
       severity: "info",
@@ -2435,11 +2437,11 @@ async function shutdown(signal) {
   } catch (err) {
     console.error("[sparkDash] failed to flush event log:", err.message);
   }
-  try {
-    mqttPublisher.stop();
-  } catch (err) {
+  // Publishes the dashboard's offline status and waits (bounded) for the broker's
+  // ack before closing; awaited below alongside the LLM dispatcher close.
+  const mqttStopped = mqttPublisher.stop().catch((err) => {
     console.error("[sparkDash] failed to stop MQTT publisher:", err.message);
-  }
+  });
   try {
     unitHistoryRuntime.stop();
   } catch (err) {
@@ -2452,7 +2454,7 @@ async function shutdown(signal) {
   }
   llmTokenRuntime.stop();
   const energyPersistenceSucceeded = fleetEnergyRuntime.stop();
-  const streamAgentClosedGracefully = await closeLlmStreamAgent();
+  const [streamAgentClosedGracefully] = await Promise.all([closeLlmStreamAgent(), mqttStopped]);
   if (!streamAgentClosedGracefully) {
     console.warn("[sparkDash] LLM dispatcher close timed out; destroyed open sockets");
   }

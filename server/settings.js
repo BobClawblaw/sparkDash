@@ -124,6 +124,38 @@ function isValidMqttPrefix(value) {
   );
 }
 
+/**
+ * The broker URL, normalised, or "" when it is not usable: an mqtt(s):// or
+ * ws(s):// URL with a host and no embedded credentials. settings.json is
+ * world-readable, so `mqtt://user:secret@host` is refused outright — the
+ * username has its own setting and the password comes from the environment.
+ */
+function normalizeMqttUrl(value) {
+  if (typeof value !== "string") return "";
+  const v = value.trim();
+  if (!v || v.length > 256 || !/^(mqtt|ws)s?:\/\//i.test(v)) return "";
+  let url;
+  try {
+    url = new URL(v);
+  } catch {
+    return "";
+  }
+  if (!url.hostname || url.username || url.password) return "";
+  return v;
+}
+
+/** Whether a raw broker URL carries a username or password in its authority. */
+function mqttUrlHasCredentials(value) {
+  if (typeof value !== "string") return false;
+  try {
+    const url = new URL(value.trim());
+    return Boolean(url.username || url.password);
+  } catch {
+    // Unparseable, but an "@" before the host still means credentials were typed in.
+    return /^[a-z]+:\/\/[^/]*@/i.test(value.trim());
+  }
+}
+
 /** Keep only known setting keys. */
 function _whitelist(obj) {
   const out = {};
@@ -176,10 +208,7 @@ function _clampSettings(settings) {
   s.metricsHistory = Boolean(s.metricsHistory);
   s.alertsEnabled = Boolean(s.alertsEnabled);
   s.mqttEnabled = Boolean(s.mqttEnabled);
-  s.mqttUrl =
-    typeof s.mqttUrl === "string" && /^(mqtt|ws)s?:\/\//.test(s.mqttUrl.trim()) && s.mqttUrl.trim().length <= 256
-      ? s.mqttUrl.trim()
-      : "";
+  s.mqttUrl = normalizeMqttUrl(s.mqttUrl);
   s.mqttUsername = typeof s.mqttUsername === "string" ? s.mqttUsername.trim().slice(0, 128) : "";
   // Trailing slashes are normal while typing; strip them instead of rejecting.
   const prefix = typeof s.mqttTopicPrefix === "string" ? s.mqttTopicPrefix.trim().replace(/\/+$/, "") : "";
@@ -201,6 +230,12 @@ export function loadSettings() {
     const raw = fs.readFileSync(SETTINGS_PATH, "utf-8");
     const parsed = JSON.parse(raw);
     _settings = _clampSettings({ ...DEFAULTS, ..._whitelist(parsed) });
+    // A broker URL with credentials written by an older build (or by hand) is
+    // dropped above; rewrite the file so the secret does not linger on disk.
+    if (mqttUrlHasCredentials(parsed?.mqttUrl)) {
+      console.warn("[settings] Removed an MQTT broker URL containing credentials from settings.json");
+      saveSettings();
+    }
   } catch (err) {
     if (err.code === "ENOENT") {
       _settings = { ...DEFAULTS };

@@ -18,6 +18,17 @@ interface SettingsDialogProps {
   onSaved: (settings: Settings) => void;
 }
 
+/** Whether a broker URL carries a user name or password before the host (mqtt://user:pass@host). */
+function mqttUrlHasCredentials(value: string): boolean {
+  const v = value.trim();
+  try {
+    const url = new URL(v);
+    return Boolean(url.username || url.password);
+  } catch {
+    return /^[a-z]+:\/\/[^/]*@/i.test(v);
+  }
+}
+
 function useEscape(onClose: () => void) {
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
@@ -147,6 +158,11 @@ export function SettingsDialog({ open, onClose, onSaved }: SettingsDialogProps) 
     if (settings.mqttUrl && !/^(mqtt|ws)s?:\/\//i.test(settings.mqttUrl.trim())) {
       // The server would silently clear it; say so instead.
       setError(`"${settings.mqttUrl}" is not a broker URL — use mqtt://host:1883 (or mqtts://, ws://, wss://), or clear the field.`);
+      return;
+    }
+    if (settings.mqttUrl && mqttUrlHasCredentials(settings.mqttUrl)) {
+      // settings.json is world-readable, so the server refuses (and clears) such a URL.
+      setError("Remove the user name and password from the broker URL: put the user name in MQTT username and the password in the SPARKDASH_MQTT_PASSWORD environment variable.");
       return;
     }
     setSaving(true);

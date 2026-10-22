@@ -78,6 +78,37 @@ test("mqtt publishing is opt-in with a validated broker URL and topic prefix", (
   assert.equal(updateSettings({ mqttUsername: "  mia " }).mqttUsername, "mia");
 });
 
+test("a broker URL with embedded credentials is refused and never written to disk", () => {
+  fs.writeFileSync(process.env.SETTINGS_JSON_PATH, JSON.stringify({ density: "compact" }));
+  loadSettings();
+  for (const url of [
+    "mqtt://mia:hunter2@broker.local:1883",
+    "mqtts://:hunter2@broker.local",
+    "ws://mia@broker.local:9001",
+    " MQTT://mia:hunter2@broker.local ",
+    "mqtt://mia:hunter2@",
+  ]) {
+    assert.equal(updateSettings({ mqttUrl: url }).mqttUrl, "", url);
+  }
+  assert.ok(!fs.readFileSync(process.env.SETTINGS_JSON_PATH, "utf-8").includes("hunter2"));
+  // An "@" in the path is not a credential.
+  assert.equal(updateSettings({ mqttUrl: "wss://broker.local/mqtt@v5" }).mqttUrl, "wss://broker.local/mqtt@v5");
+  assert.equal(updateSettings({ mqttUrl: "mqtt://" }).mqttUrl, "");
+});
+
+test("a credentialed broker URL already in settings.json is scrubbed on load", () => {
+  fs.writeFileSync(
+    process.env.SETTINGS_JSON_PATH,
+    JSON.stringify({ mqttEnabled: true, mqttUrl: "mqtt://mia:hunter2@broker.local:1883" })
+  );
+  const s = loadSettings();
+  assert.equal(s.mqttUrl, "");
+  assert.equal(s.mqttEnabled, true);
+  const onDisk = fs.readFileSync(process.env.SETTINGS_JSON_PATH, "utf-8");
+  assert.ok(!onDisk.includes("hunter2"));
+  assert.equal(JSON.parse(onDisk).mqttUrl, "");
+});
+
 test("timeZone follows the browser by default, accepts IANA names and drops anything else", () => {
   fs.writeFileSync(process.env.SETTINGS_JSON_PATH, JSON.stringify({ density: "compact" }));
   assert.equal(loadSettings().timeZone, "");
