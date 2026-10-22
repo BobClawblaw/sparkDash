@@ -293,6 +293,14 @@ export function SparkPage({
                 {spark.platform !== "windows" && modelsPanel}
               </div>
             </Item>
+            {/* History closes the hardware column: the right column (LLM, storage, network) is
+                usually the taller one, so this fills the space under the GPU / memory / CPU row
+                instead of starting below both columns. Stacked (below xl) it stays last. */}
+            {metricsHistory && (
+              <Item order={40}>
+                <HistoryPanel key={spark.id} sparkId={spark.id} kind={spark.kind} temperatureUnit={temperatureUnit} />
+              </Item>
+            )}
           </div>
           <div className="sp-col">
             {view === "all" && showSvc && llmOn && primaryPort != null && (
@@ -340,10 +348,6 @@ export function SparkPage({
         </div>
       )}
 
-      {/* Full width under both columns: the small multiples need the room. */}
-      {metricsHistory && (
-        <HistoryPanel key={spark.id} sparkId={spark.id} kind={spark.kind} temperatureUnit={temperatureUnit} />
-      )}
     </div>
   );
 }
