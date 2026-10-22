@@ -10,7 +10,7 @@ import { HealthChips, worstSeverity } from "../ui/HealthFindings";
 import { AppLink } from "../ui/AppLink";
 import { idToPath } from "../../constants";
 import { VramBreakdownBar } from "../ui/VramBreakdownBar";
-import { computeVramBreakdown, type VramBreakdownContext } from "../../shared/vramBreakdown";
+import { HEADROOM_THRESHOLDS_MB, computeVramBreakdown, memoryModelFor, type VramBreakdownContext } from "../../shared/vramBreakdown";
 import { ImageIcon, PowerOnIcon } from "../ui/icons";
 import { formatCtx } from "./fleetStats";
 import { ModelLauncher } from "./ModelLauncher";
@@ -175,9 +175,15 @@ function SparkCardImpl({
   }
   // Idle Spark (nothing serving): the launcher block fills the free space instead.
   // Memory or compute in use while nothing serves yet: a model is most likely still loading.
+  // When nvidia-smi names the processes holding the GPU, say so: it may be a server sparkDash does not
+  // monitor (add its port under "+ Add LLM port"), not a model that is still starting.
+  const gpuHolders = (gpu?.processes ?? [])
+    .filter((p) => p.vramMB > 0)
+    .slice(0, 3)
+    .map((p) => `${p.name} (${formatMb(p.vramMB)})`);
   const loadingHint =
     !llm && (memUsed >= 2048 || usage >= 10)
-      ? `${formatMb(memUsed)} VRAM in use · GPU ${Math.round(usage)}%`
+      ? `${gpuHolders.length > 0 ? `In use by ${gpuHolders.join(", ")} · ` : ""}${formatMb(memUsed)} VRAM in use · GPU ${Math.round(usage)}%`
       : null;
   const showLauncher = role !== "worker" && !llm && spark.llmMonitoring !== false && spark.platform !== "windows";
 
@@ -320,7 +326,7 @@ function SparkCardImpl({
               {cpuPower ? <Bar label="CPU power" caption={`${cpuPower.draw} / ${cpuPower.tdp} W`} pct={cpuPowerPct} color="var(--color-violet)" /> : null}
             </div>
           </div>
-          {showLauncher ? <ModelLauncher spark={spark} onOpen={onSelect} busy={loadingHint} /> : null}
+          {showLauncher ? <ModelLauncher spark={spark} onOpen={onSelect} busy={loadingHint} busyHolders={gpuHolders.length > 0} freeMb={memTotal > 0 ? memAvail : null} lowFreeMb={HEADROOM_THRESHOLDS_MB[memoryModelFor(spark.kind)].low} /> : null}
           {role === "worker" ? (
             <div className="ov-launch ov-launch--worker">
               <div className="eyebrow">Worker of</div>
@@ -339,7 +345,7 @@ function SparkCardImpl({
               )}
               <div className="ov-launch__hint">
                 {headLlm
-                  ? `${backendLabel(headLlm.backend) ?? headLlm.backend ?? "LLM"} · ${headLlm.generationTps.toFixed(1)} tok/s decode`
+                  ? `${backendLabel(headLlm.backend) ?? headLlm.backend ?? "LLM"} · ${headLlm.generationTps.toFixed(1)} tok/s decode${headLlm.perStreamTps != null ? ` · ${headLlm.perStreamTps.toFixed(1)} per stream` : ""}${headLlm.perStreamPrefillTps != null ? ` · ${Math.round(headLlm.perStreamPrefillTps).toLocaleString()} prefill per request (effective, incl. cached)` : ""}`
                   : headSpark
                     ? headSpark.online
                       ? "No model loaded on the head"
@@ -367,6 +373,14 @@ function SparkCardImpl({
                   <div className="big-num ov-tps__num">{llm.generationTps.toFixed(1)}<small>tok/s</small></div>
                 )}
                 {isStrata && llm.generationTpsSource === "slot-mean" && <small className="text-muted">active-slot mean</small>}
+                {llm.perStreamTps != null && (
+                  <small
+                    className="text-muted"
+                    title="Average decode throughput of one running stream (1 / mean seconds per output token). Only engines that publish a per-token latency histogram report it."
+                  >
+                    {llm.perStreamTps.toFixed(1)} tok/s per stream
+                  </small>
+                )}
               </div>
               <div
                 title={
@@ -383,6 +397,14 @@ function SparkCardImpl({
                   </div>
                 ) : (
                   <div className="big-num ov-tps__num">{Math.round(llm.prefillTps).toLocaleString()}<small>tok/s</small></div>
+                )}
+                {llm.perStreamPrefillTps != null && (
+                  <small
+                    className="text-muted"
+                    title="Effective prefill rate of one request (prompt tokens ÷ prefill seconds over finished requests). The prompt counter includes prefix-cache tokens, so this is an effective speed, not raw GPU speed; it is held between completions."
+                  >
+                    {Math.round(llm.perStreamPrefillTps).toLocaleString()} tok/s per request — effective (incl. cached tokens)
+                  </small>
                 )}
                 {isStrata && llm.prefillTps > 0 && <small className="text-muted">last reported mean</small>}
               </div>

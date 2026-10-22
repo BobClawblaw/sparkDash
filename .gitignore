@@ -29,8 +29,6 @@ config/bench-exports/
 .DS_Store
 docs/
 mockups/
-AGENTS.md
-CODEBASE.md
 PLAN.md
 tetris.html
 .zcode/

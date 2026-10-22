@@ -121,3 +121,33 @@ describe("SparkCard", () => {
     expect(container.textContent).toContain("Head is offline");
   });
 });
+
+describe("SparkCard per-stream decode rate", () => {
+  it("shows the per-stream rate when the engine reports one", () => {
+    const spark = head(true);
+    Object.assign(spark.metrics.llm[0], { generationTps: 40, perStreamTps: 18.5 });
+    const { container } = render(<SparkCard spark={spark} temperatureUnit="celsius" />);
+    expect(container.textContent).toContain("18.5 tok/s per stream");
+  });
+  it("omits the per-stream line when the engine has no histogram", () => {
+    const spark = head(true);
+    Object.assign(spark.metrics.llm[0], { generationTps: 40, perStreamTps: null });
+    const { container } = render(<SparkCard spark={spark} temperatureUnit="celsius" />);
+    expect(container.textContent).not.toContain("per stream");
+  });
+});
+
+describe("SparkCard effective prefill rate", () => {
+  it("labels the per-request prefill as effective (incl. cached tokens)", () => {
+    const spark = head(true);
+    Object.assign(spark.metrics.llm[0], { prefillTps: 2813, perStreamPrefillTps: 2813 });
+    const { container } = render(<SparkCard spark={spark} temperatureUnit="celsius" />);
+    expect(container.textContent).toContain("2,813 tok/s per request — effective (incl. cached tokens)");
+  });
+  it("omits the prefill line when no request has finished", () => {
+    const spark = head(true);
+    Object.assign(spark.metrics.llm[0], { prefillTps: 0, perStreamPrefillTps: null });
+    const { container } = render(<SparkCard spark={spark} temperatureUnit="celsius" />);
+    expect(container.textContent).not.toContain("effective (incl. cached tokens)");
+  });
+});

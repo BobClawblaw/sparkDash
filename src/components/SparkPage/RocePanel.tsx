@@ -175,6 +175,7 @@ export function RocePanel({ roce, className }: { roce: RoceMetrics | null | unde
       <div className="sp-roce-summary">
         <Tag tone={summary.tone}>{summary.text}</Tag>
       </div>
+      <p className="sp-muted">These netdev traffic rates do not measure RDMA payload throughput. Pause frames are cumulative totals, separate from the current PFC setting.</p>
       {open && (
         <div id="roce-ports" className="sp-stack">
           {live.map((d) => (

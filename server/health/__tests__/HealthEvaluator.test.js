@@ -144,3 +144,15 @@ test("parseKernelErrors reads counters and the latest Xid code", () => {
   assert.equal(parseKernelErrors("garbage"), null);
   assert.equal(parseKernelErrors(undefined), null);
 });
+
+// Busy memory-bound decode is not enough evidence to diagnose a stuck GPU.
+test("low-power finding describes the observation and recommends checking progress first", () => {
+  const h = new HealthEvaluator();
+  let findings;
+  for (let i = 0; i < LOW_POWER_STREAK; i++) findings = h.evaluate({ gpu: { usage: 96, power: { draw: 9 } } }, "gpu");
+  const finding = findings.find((f) => f.id === "low-power");
+  assert.equal(finding.title, "GPU has high utilisation with low power draw");
+  assert.match(finding.hint, /memory-bound/);
+  assert.match(finding.hint, /progress/);
+  assert.doesNotMatch(finding.hint, /reset|reboot/);
+});
