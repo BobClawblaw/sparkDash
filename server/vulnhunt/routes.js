@@ -47,7 +47,7 @@ export function registerVulnHuntRoutes(app, { registry, manager, store, allowRun
   const startGate = () =>
     configuredToken() || isLoopbackBind(bindHost)
       ? null
-      : "This dashboard has no server token and is reachable from the network, so anyone who can reach it could run an agent on your units. Set SPARKDASH_TOKEN in the host's .env and recreate the container (docker compose up -d --force-recreate), or bind to loopback. The Access token field in Settings only stores the token in this browser: it cannot set the server's.";
+      : "Starting scans needs SPARKDASH_TOKEN to be set (or a dashboard bound to loopback): without it anyone who can reach this port could run an agent on your units.";
   const allowedHosts = () => parseAllowedHosts(process.env.VULNHUNT_ALLOWED_HOSTS);
 
   const sparkOr404 = (req, res) => {

@@ -474,7 +474,7 @@ export function SettingsDialog({ open, onClose, onSaved }: SettingsDialogProps) 
           {/* Outside the settings block: a rejected token is exactly when settings fail to load. */}
           <SettingRow
             title="Access token"
-            help="This browser's copy of the server's token, sent to servers that already require one. It cannot turn protection on: set SPARKDASH_TOKEN in the host's .env and recreate the container. Stored in this browser only."
+            help="Sent to servers that set SPARKDASH_TOKEN. Stored in this browser only."
           >
             <div className="set-token">
               <span className={`set-token__state${tokenSet ? " is-set" : ""}`} data-testid="access-token-state">
