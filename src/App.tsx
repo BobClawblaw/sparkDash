@@ -51,8 +51,6 @@ import {
   COST_ID,
   benchId,
   benchTypeOf,
-  toolId,
-  toolTypeOf,
   idToPath,
   isPageId,
   isStaleSparkId,
@@ -64,8 +62,6 @@ import { TempsPage } from "./components/TempsPage/TempsPage";
 import { ActivityPage } from "./components/ActivityPage/ActivityPage";
 import { BenchPage } from "./components/bench/BenchPage";
 import { BENCH_SPARK_KEY, BENCH_TYPES } from "./components/bench/benchCatalog";
-import { ToolsPage } from "./components/tools/ToolsPage";
-import { toolPaletteCommands } from "./components/tools/toolsPalette";
 import type { AuthMode, Settings, SparkSnapshot } from "./api/types";
 import { AccessTokenPrompt } from "./components/AccessTokenDialog";
 import { onTokenChange } from "./api/authToken";
@@ -273,7 +269,6 @@ function DashboardApp() {
   const isOverview = activeId === OVERVIEW_ID;
   const onPage = isPageId(activeId);
   const benchType = benchTypeOf(activeId);
-  const toolType = toolTypeOf(activeId);
   const hideWorkers = settings?.hideWorkers ?? false;
   // Charts read the time zone from a module value; set it before the pages render, and
   // re-key <main> below so a change in Settings redraws them.
@@ -484,7 +479,6 @@ function DashboardApp() {
         run: () => navigate(s.id),
       });
     }
-    cmds.push(...toolPaletteCommands(navigate));
     for (const b of BENCH_TYPES) {
       cmds.push({
         id: `bench:${b.id}`,
@@ -527,8 +521,6 @@ function DashboardApp() {
           onOpenSearch={() => setShowPalette(true)}
           benchType={benchType}
           onSelectBench={(type) => navigate(benchId(type))}
-          toolType={toolType}
-          onSelectTool={(type) => navigate(toolId(type))}
           connected={connected}
           refreshInterval={refreshInterval}
           authMode={authMode}
@@ -585,8 +577,6 @@ function DashboardApp() {
                 <ActivityPage sparks={displaySparks} onSelectSpark={navigate} />
               ) : activeId === SHOWCASE_ID ? (
                 <ShowcaseView sparks={displaySparks} />
-              ) : toolType ? (
-                <ToolsPage type={toolType} sparks={displaySparks} />
               ) : benchType ? (
                 <BenchPage type={benchType} sparks={displaySparks} benchShareImage={settings?.benchShareImage ?? false} />
               ) : isOverview ? (

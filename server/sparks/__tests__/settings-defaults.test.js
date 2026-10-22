@@ -40,21 +40,6 @@ test("prometheusExport is opt-in and stored as a boolean", () => {
   assert.equal(updateSettings({ prometheusExport: 0 }).prometheusExport, false);
 });
 
-test("vulnhuntEnabled is opt-in and stored as a boolean", () => {
-  fs.writeFileSync(process.env.SETTINGS_JSON_PATH, JSON.stringify({ density: "compact" }));
-  assert.equal(loadSettings().vulnhuntEnabled, false);
-  assert.equal(updateSettings({ vulnhuntEnabled: "yes" }).vulnhuntEnabled, true);
-  assert.equal(loadSettings().vulnhuntEnabled, true);
-  assert.equal(updateSettings({ vulnhuntEnabled: 0 }).vulnhuntEnabled, false);
-});
-
-test("reaEnabled is opt-in and stored as a boolean", () => {
-  fs.writeFileSync(process.env.SETTINGS_JSON_PATH, JSON.stringify({ density: "compact" }));
-  assert.equal(loadSettings().reaEnabled, false);
-  assert.equal(updateSettings({ reaEnabled: "yes" }).reaEnabled, true);
-  assert.equal(updateSettings({ reaEnabled: 0 }).reaEnabled, false);
-});
-
 test("metricsHistory is opt-in and stored as a boolean", () => {
   fs.writeFileSync(process.env.SETTINGS_JSON_PATH, JSON.stringify({ density: "compact" }));
   assert.equal(loadSettings().metricsHistory, false);

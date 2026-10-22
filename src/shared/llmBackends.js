@@ -18,6 +18,7 @@ export const BACKEND_LABELS = Object.freeze({
   freetoken: "FreeToken",
   radiance: "Radiance",
   strata: "Strata",
+  flare: "Flare",
 });
 
 /**

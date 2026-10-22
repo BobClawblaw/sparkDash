@@ -43,8 +43,6 @@ Monitored units run **Linux**, **macOS**, or **Windows** (a Windows PC with an N
 - [Mobile PWA (install on a phone)](#mobile-pwa-install-on-a-phone)
 - [Glance integration](#glance-integration)
 - [Quality bench](#quality-bench)
-- [Security scans (VulnHunter)](#security-scans-vulnhunter)
-- [Reverse engineering (REA)](#reverse-engineering-rea)
 - [Prometheus](#prometheus)
 - [Alert notifications](#alert-notifications)
 - [RoCE / RDMA monitoring](#roce--rdma-monitoring)
@@ -67,6 +65,12 @@ Monitored units run **Linux**, **macOS**, or **Windows** (a Windows PC with an N
 ---
 
 ## Latest version changelog
+
+### Version 2.70.0
+- **Decode benchmark**: temperature (default 0.7) and, for the Prose type, thinking on or off are selectable; the copied result text and the share card show both.
+- **NVIDIA Flare** is detected and its tok/s monitored from `/metrics`.
+- **Tool Eval Bench**: compare a run on one Spark with a run from another, and expand the scenario list to a taller view.
+- **Overview** cards show CPU temperature and power; a **Cost compare** page prices fleet usage as any hosted model; Radiance and Strata engines are recognised.
 
 ### Version 2.50.0
 - **Tool Eval Bench: Show card** turns a finished result into a share image (score, rating, outcomes, safety warnings, categories) you can copy or save as a PNG.
@@ -125,7 +129,7 @@ Full history: [CHANGELOG.md](./CHANGELOG.md)
 | **Windows hosts** | Windows machines with an AMD iGPU (Strix Halo and friends) are first-class units too: agentless PowerShell over OpenSSH, CPU/RAM/disks/network collectors, and GPU usage straight from the engine performance counters (reads like Task Manager). The Add/Edit wizard has a **Strix Halo / Windows host** unit type |
 | **Live streaming** | WebSocket metrics with configurable poll intervals; central history store for sparklines across tab switches |
 | **Local + remote** | Host metrics via sysfs/proc/`nvidia-smi`; remotes over SSH (key or password) |
-| **LLM probe** | Auto-detects llama.cpp, vLLM, sglang, LM Studio, Ollama, ds4-server, EXL3, TensorFold, FreeToken, Strata, or q27; live decode/prefill tok/s from the engine's own counters where it publishes them (not LM Studio or Ollama); cached vs uncached prefill on ds4, llama.cpp, SGLang, and q27; **daily peak** history on the LLM card |
+| **LLM probe** | Auto-detects llama.cpp, vLLM, sglang, LM Studio, Ollama, ds4-server, EXL3, TensorFold, FreeToken, Strata, q27, or NVIDIA Flare; live decode/prefill tok/s from the engine's own counters where it publishes them (not LM Studio or Ollama); cached vs uncached prefill on ds4, llama.cpp, SGLang, and q27; **daily peak** history on the LLM card |
 | **LLM server presets** | One-click **LM Studio :1234** / **Ollama :11434** / **TensorFold :8888** presets in the Add wizard's LLM-ports step, the "+ Add LLM port" panel, and each LLM panel's settings (they fill the port number — they install nothing) |
 | **ComfyUI** | Opt-in probe: queue/jobs, progress, cancel, Open link, inventory, overview chip |
 | **Hermes Agent** | Opt-in per unit: background update check (10 min), status badges, one-click or batch `hermes update` |
@@ -133,8 +137,6 @@ Full history: [CHANGELOG.md](./CHANGELOG.md)
 | **Decode benchmark** | Multi-concurrency streaming decode tok/s; type picker (Structured / Prose / Code / JSON). Code is a different Python task per stream. Lab protocol (temp 0, thinking off); persisted last run. Remote units: LAN HTTP, or SSH tunnel to loopback. **Remote** button for an on-demand HTTPS/host:port target |
 | **Prefill benchmark** | Context-size sweep (1k–300k) of prefill tok/s and TTFT; unique prefix per size; persisted last run. Same remote targeting as decode |
 | **Quality benchmark** | Fixed, seeded quality suite (QA, reasoning, arithmetic, state tracking, GSM8K, MMLU, plus optional instruction following and long-context recall) at temperature 0; per-category and overall score; last 30 runs kept; paired compare with McNemar p-value. Same remote targeting as decode |
-| **Security scans** | **Benchmarks → VulnHunter**: install and run [VulnHunter](https://github.com/nealbridges/VulnHunter), an agentic source-code security scanner, on a unit against a git URL or a checkout there. Detached on the unit, live output, parsed report (findings, severity, CWE, exploit-test status), history. Opt-in setup on the unit; see [Security scans](#security-scans-vulnhunter) |
-| **Reverse engineering** | **Tools → REA**: install and run [REA](https://github.com/morluto/rea) on a unit: native binaries, JavaScript/Electron apps, .NET, APKs, firmware, captures and more, from a path on the unit or a file/folder uploaded from the browser. Opt-in; see [Reverse engineering (REA)](#reverse-engineering-rea) |
 | **Prompt Showcase** | Full-page multi-terminal LLM streaming demo (up to 32 prompts) with live tok/s and copy-out |
 | **LLM inference health** | KV cache free/pool (vLLM `cache_config_info` token and byte size; usage % when the pool size is absent), run/wait queue, TTFT/E2E/ITL p95, preemptions, prefix cache, MTP accept from Prometheus `/metrics` (vLLM and q27; q27 FIFO-queues so the Requests tile reads “N run” without a wait gauge) |
 | **Multiple LLM ports** | Monitor several LLM servers on different ports simultaneously — each gets its own panel with independent backend detection and metrics |
@@ -429,61 +431,6 @@ The last 30 runs per unit are kept in `config/quality-bench-history.json`, with 
 
 ---
 
-## Security scans (VulnHunter)
-
-**Benchmarks → VulnHunter** runs [VulnHunter](https://github.com/nealbridges/VulnHunter) (Apache-2.0, a maintained fork of Capital One's scanner) on one of your units and shows what it found. sparkDash drives VulnHunter's own `vh` operator CLI the same way Tool Eval drives `tool-eval-bench`: the scan runs **detached on the unit** (closing the browser or restarting sparkDash does not stop it), its output is streamed, and the finished report is cached here so history stays readable while the unit is off.
-
-VulnHunter is an agentic tool: the hunt itself is done by an agent harness and model that **you** provide on the unit (a local open-weight model served from the Spark works).
-
-**Setup, one click** (nothing to type in a terminal): on the VulnHunter page pick the unit and press **Set up with …** next to the agent harness found on it (Claude Code, Codex CLI or OpenCode). That one click:
-
-1. turns VulnHunter on (it is an opt-in setting, see Safety),
-2. fetches the pinned VulnHunter revision by commit hash into `~/.local/share/sparkdash/VulnHunter` on the unit, copies the `vulnhunt` skill into that harness's skills directory (`~/.claude/skills`, `~/.codex/skills` or `~/.config/opencode/skills`) and writes the `vh` launcher to `~/.local/bin`, and
-3. writes a small wrapper (`~/.local/bin/vulnhunt-<harness>`) that turns VulnHunter's "prompt file as the last argument" contract into the harness's headless call, and saves it as the harness command.
-
-For Claude Code and Codex the wrapper enforces read-only scans with the CLI's own tool restrictions (no shell tool; Codex's workspace-write sandbox); scans that may execute code run without them. For OpenCode read-only is only requested in the prompt. The presets' flags were checked against each CLI's `--help`; whether a harness resolves `/vulnhunt` in headless mode is up to the harness. It deliberately does not run upstream's `install.sh`: besides the same copying, that script builds a virtualenv from PyPI for the fix skill, which a scan does not need. The revision is pinned in the dashboard build; a newer build offers **Update**. Needs `git`, `setsid` and Python 3.11+ on the unit, and GitHub reachable from it.
-
-**Another harness, or your own command**: under **Advanced** pick the skills directory by hand and enter any command that runs your harness headlessly (the prompt file path is appended as the last argument). It is saved on the unit in a file only its user can read (`~/.config/sparkdash/vulnhunt-host-cmd`), checked to start with a program that exists there, and never shown again: the page only shows the program's name. `VULNHUNT_HOST_CMD` in the unit user's environment works too. A "do it by hand" section shows the equivalent shell commands.
-
-**Easy runs**: paste a repository URL (or a path on the unit), tick the authorization box and press **Scan**; recent sources are one click away and any past run can be scanned again. Time limit, label and the execute-code option are under **Options**.
-
-**What a scan does**: clone (`vh clone`, or a shallow clone of a checkout under the unit user's home) → `vh host` with the `/vulnhunt <checkout>` prompt, the same headless prompt VulnHunter's benchmark harness uses → find the new `*_VULNHUNT_RESULTS_*` folder → `vh write-manifest` / `validate-manifest`. The report is parsed into findings (id, title, CWE, severity, runtime, exploit-test result, measured impact) and the PoC / exploit-test file list. One time limit (default 4 h) covers the whole scan, clone included; a scan can be stopped from the page. When it ends the clone is deleted and only the results folder is kept on the unit (`~/.cache/sparkdash/vulnhunt/<run>/results`), with the run's files private to the unit's user. Deleting a run removes them. Needs `vh`, `git` and `setsid` on the unit.
-
-**Safety, and what it does not promise**
-- **Opt-in.** VulnHunter is off until you turn it on (**Settings → VulnHunter scans**, or the **Turn on VulnHunter** button on its page). Until then installing, saving the harness command and starting a scan are refused; viewing the page, status and history is not. It does not depend on `SPARKDASH_TOKEN`, as on a local install the dashboard is only reachable by you. But once it is on, whoever can reach the API can run an agent on your units as their SSH user, so set `SPARKDASH_TOKEN` (or keep the loopback bind) if others can reach the dashboard. `VULNHUNT_ALLOWED_HOSTS` (comma-separated host names, no ports; `*.example.org` allowed) pins the hosts a scan may clone from; empty means any host the policy below allows, and path sources are not subject to it.
-- **Authorization.** VulnHunter performs dual-use security work. Every scan needs an explicit "I am authorized to scan this code" confirmation, and the time and the requester's address (the client IP, or the token principal) are kept on the run record.
-- **Read-only is a request, not a sandbox.** The default prompt tells the harness not to fetch dependencies or execute code. A repository (or the agent's own output) can try to steer the agent, so if you need a guarantee run the harness in a container or under a user that cannot reach anything you care about. Allowing execution is a separate, explicitly confirmed choice, because exploit tests then run on the unit. The harness is started inside the clone, so project-level config a repository ships (hooks, MCP servers, agent instruction files) is visible to harnesses that read it from the working directory.
-- **Sources.** `https://` git URLs (no credentials) or paths under the unit user's home. Names and addresses of cloud metadata services (`metadata`, `metadata.google.internal`, `169.254.169.254`, `100.100.100.200`, `fd00:ec2::254`, …) are refused, including IPv6 forms that embed them; private, loopback and tailnet hosts are allowed because self-hosted git servers are the common case. This is a best-effort policy: a DNS name can still resolve anywhere, so pin hosts with `VULNHUNT_ALLOWED_HOSTS` when that matters. The clone ignores the user's global git config (credential helpers, `insteadOf`), follows no HTTP redirect, runs no hooks and fetches no LFS objects. On the Spark that runs sparkDash, scans run as the SSH user, never as root.
-- **Reports are untrusted.** The report is agent-written text derived from untrusted code: it is shown as plain text, never rendered as HTML. A results folder that came with the repository, a symlinked results folder or a README that is a symlink is not accepted as a result.
-- **Process control.** Stop and the time limit signal the scan's whole session. A harness or helper that deliberately starts its own session escapes both. For the unit that runs the dashboard in a container, stopping the container may end a scan that was started from inside it; scans on remote units are unaffected.
-- **Output limits.** The log on the unit is trimmed when it passes 64 MiB, and the page keeps the most recent 2 MiB of it.
-- Private repositories: clone them on the unit first and scan the checkout path.
-
-The page credits and links the VulnHunter project (maintained by Neal Bridges, a fork of Capital One's VulnHunter, Apache-2.0).
-
-Runs are kept in `config/vulnhunt-runs.json` (up to 100) and `config/vulnhunt-results/` (both git-ignored); move them with `VULNHUNT_RUNS_PATH` and `VULNHUNT_RESULTS_DIR`. Linux units only.
-
-## Reverse engineering (REA)
-
-**Tools → REA** installs and drives [REA](https://github.com/morluto/rea) (npm `rea-agents`, MIT, by morluto, *Reverse Engineer Anything*) on one of your units and shows what it finds. REA is a CLI and an MCP server; sparkDash uses the CLI only, the same way Tool Eval and VulnHunter drive theirs: runs happen **detached on the unit** (closing the browser or restarting sparkDash does not stop them), output streams live, and results are cached here.
-
-**Turn it on and set it up.** REA is an opt-in setting (**Settings → REA**, or the **Turn on REA** button on its page), off by default. Then **Install REA** does a pinned, reproducible install on the unit: `rea-agents@6.4.0` from a checked-in lockfile with an integrity hash for every package (`npm ci --ignore-scripts`, into `~/.local/share/sparkdash/rea/6.4.0`, staged and smoke-tested before it is activated). It needs Node 22.19+/24.11+/26+ and npm on the unit. sparkDash looks for one on the PATH and in nvm, volta, fnm, asdf and `~/.local`, and never upgrades or replaces what it finds; if there is none, the same click first installs the official Node.js 22.23.3 build from nodejs.org into `~/.local/share/sparkdash/node` (SHA-256 pinned in sparkDash, no root, no package manager; Linux arm64/x64 with `tar`, `sha256sum` and curl/wget/python3). It never runs REA's own `setup` (which edits agent client configs). The readiness card shows REA's own `doctor` checks and which optional engines it found (Ghidra, Hopper, IDA, JADX, apktool, binwalk, unblob, adb, JEB): most engines are detected, never installed, and the card says what each one unlocks. The exception is **Ghidra**, the engine behind the native-binary workflows: the readiness card has its own **Install Ghidra 12.1.4** button (below).
-
-**Ghidra, one click.** The native-binary workflows (decompiled code, assembly, symbols, references) need Ghidra 12.1.x and a 64-bit full JDK 21+, which most units do not have. **Install Ghidra** on the readiness card does it without root or a package manager, all under `~/.local/share/sparkdash` (about 2 GB, 4 GiB free required): Ghidra 12.1.4 from the NSA's GitHub release (570 MB, SHA-256 pinned in sparkDash), a JDK 21 only if the unit has none (Eclipse Temurin 21, SHA-256 pinned; an existing JDK 21+ is reused), and, on an aarch64 unit such as a Spark, Ghidra's native decompiler **built on the unit** from the sources inside the release (it ships none for ARM; needs `g++`, `make` and zlib's development files, a few minutes). Then it imports a small program headlessly as a smoke test, and only after that writes `~/.config/sparkdash/ghidra-install`; REA runs started from the dashboard get `GHIDRA_INSTALL_DIR` and `JAVA_HOME` from that record, unless the unit user's environment already sets `GHIDRA_INSTALL_DIR`, in which case theirs stays in charge. It is a separate job from the REA install (one job per unit at a time), can be re-run safely (a complete unpack is only re-verified), and a failure removes its staging and leaves REA as it was. Hopper, IDA and the other engines are still detected only.
-
-**Pick a target and a workflow.** The target is a path on the unit (inside the unit user's home) or an upload: drop files, a folder, or a `.zip`/`.tar`/`.tar.gz` archive. Uploads stream to `~/.cache/sparkdash/rea/uploads` on the unit with size and file-count limits, are committed atomically, archives are checked (no absolute or `..` entries, links, devices, zip bombs) and extracted there, and are removed after 24 h or when you delete them. The catalog lists every REA 6.4.0 command that makes sense as a one-shot action, grouped by family (JavaScript/Electron, .NET, native binaries, layout and diagnostics, Android, Apple, firmware, evidence, captures, process and browser runtime, adb) and built from the real CLI, not the docs.
-
-**Results.** A summary, identity, findings, limitations and unknowns, and paged views served by REA's own `inspect-analysis-view` (modules of JavaScript applications, sections and symbols plus facets of layout results, facets of native functions), so a result of hundreds of MB never reaches the browser. Large results stay on the unit; the page asks for pages on demand. Export downloads the run's result as JSON. Compare wraps two runs' Evidence records into bundles on the unit with REA's own bundle builder and runs `rea compare`. All of it is shown as plain text.
-
-**Safety**
-- **Opt-in, and who can use it.** Once on, anyone who can reach the dashboard API can install REA and run analyses on your units as their SSH user; set `SPARKDASH_TOKEN` if others can. Every run needs an "I am authorized to analyze this target" confirmation, kept on the run record.
-- **Not a sandbox.** REA and its providers parse untrusted bytes as the unit's user. Treat unknown binaries like any malware-analysis target: use a unit or user you can afford to lose.
-- **Workflows that run or touch the target** (process capture, browser/Electron/JS/native runtime observation, anything that launches the target or contacts a network) need a separate per-run confirmation and are labelled in red. The classification is derived server-side from the catalog, not from the request. Workflows that change an Android device (install, uninstall, push, start, stop) are refused unless the server sets `REA_ENABLE_DEVICE_WRITES=1`.
-- **Responsible use.** REA ships its own [DISCLAIMER](https://github.com/morluto/rea/blob/main/DISCLAIMER.md): analyze only software you are authorized to examine, and respect licences and laws. The page links it.
-- Paths are checked on the unit with both sides resolved inside the user's home; results and uploads are never read through symlinks; run files are private (umask 077); a run has one time limit for all stages, a bounded log and a capped result (`result.json` larger than 256 MiB fails with a clear error).
-
-Runs are kept in `config/rea-runs.json` (up to 100) and `config/rea-results/` (git-ignored; move with `REA_RUNS_PATH` / `REA_RESULTS_DIR`). Limits: `REA_UPLOAD_MAX_BYTES` (1 GiB), `REA_UPLOAD_MAX_FILES` (5000), `REA_EXPORT_MAX_BYTES` (256 MiB). Linux units only. To move to another REA version, update the pin in `server/rea/pinned/` (package.json, lockfile) and `REA_VERSION` in `server/rea/commands.js` together.
-
 ## Prometheus
 
 Opt-in (default **off**). **Settings → Prometheus metrics** serves every unit's metrics at `GET /metrics` in the Prometheus text format (0.0.4), so Prometheus, VictoriaMetrics or Grafana Agent can scrape sparkDash and keep history beyond what the dashboard shows. While the setting is off the path answers `404`.
@@ -735,7 +682,7 @@ npm install
 npm run dev
 ```
 
-- **Docker**: open **http://127.0.0.1:5555** on the host (arm64 image, auto-restart, host mounts for GPU/metrics access). The compose file serves the frontend from the host's `./dist` when it has been built (`npm run build`) and from the copy baked into the image otherwise, so a fresh clone works; a host build that is older than the image's copy is ignored, so after `git pull` one `docker compose up --build -d` is enough
+- **Docker**: open **http://127.0.0.1:5555** on the host (auto-restart, host mounts for GPU/metrics access). The image is built for the machine's own architecture — Docker detects it, so a DGX Spark builds and runs the arm64 image as before and an x86 box builds a native amd64 one, with no emulation and no *image platform does not match the host platform* warning. Both architectures are supported: `docker compose -f docker-compose.yml -f docker-compose.multiarch.yml build` produces the arm64 and amd64 variants in one manifest list (the pair the release workflow publishes), and `DOCKER_DEFAULT_PLATFORM=linux/arm64` (or `linux/amd64`) cross-targets a single one. The compose file serves the frontend from the host's `./dist` when it has been built (`npm run build`) and from the copy baked into the image otherwise, so a fresh clone works; a host build that is older than the image's copy is ignored, so after `git pull` one `docker compose up --build -d` is enough
 - **Dev**: Vite on **http://localhost:5173** (proxies API/WS to Express)
 
 For another computer, keep the server on loopback and use an SSH tunnel:
@@ -840,7 +787,7 @@ sparkDash/
 │   ├── health/          HealthEvaluator (findings)
 │   ├── energy/          Fleet energy tracker + monthly archive
 │   ├── llmtokens/       Token ledger · events/ Activity log · metrics/ Unit history (GPU chart, Temps week, 48 h / 30 d tiers)
-│   ├── llmlaunch/       Model launchers · tooleval/ Tool Eval Bench · vulnhunt/ VulnHunter scans
+│   ├── llmlaunch/       Model launchers · tooleval/ Tool Eval Bench
 │   ├── secretsStore.js  Encrypted password persistence
 │   └── validate.js      Host/user validation (SSRF-minded)
 ├── config/              Runtime state (volume; secrets gitignored)
@@ -882,7 +829,6 @@ sparkDash/
 | GET | `/api/events` | Fleet event log (`limit`, `sparkId`, `sinceId`, `beforeId`; 2000 kept) |
 | GET/POST/PUT/DELETE | `/api/sparks/:id/llm-launchers[/:lid]` | Registered start.sh / stop.sh model launchers; `POST …/:lid/start` and `…/stop` run them, `GET …/jobs/:jobId` streams the shell output |
 | GET/POST/DELETE | `/api/sparks/:id/tool-eval/…` | Tool Eval Bench on a Spark: `status`, `install`, `preview`, `probe`, `runs` (start / list / stream / attach / stop / refresh / `result` / delete); `GET /api/tool-eval/spec` serves the option spec |
-| GET/POST/DELETE | `/api/sparks/:id/vulnhunt/…` | VulnHunter scans on a unit: `status`, `runs` (start / list / stream / attach / stop / refresh / `report` / delete); `GET /api/vulnhunt/setup` serves the setup steps |
 | POST | `/api/sparks/test` | Ephemeral SSH + LLM (+ Comfy if enabled) test (no persist) |
 | POST | `/api/sparks/:id/test` | Connectivity test (can save password) |
 | POST | `/api/sparks/:id/comfy/cancel` | Cancel ComfyUI job by `promptId` |
@@ -994,8 +940,6 @@ Copy `.env.example` to `.env` if needed:
 | `SPARKDASH_TOKEN` | _(empty)_ | Bearer token. When set, it is required for every mutation and WebSocket connection, and for REST reads on a non-loopback bind. The browser prompts for it when needed (Settings → Access token to change it). |
 | `SPARKDASH_ALLOW_OPEN_REMOTE` | `1` | Unset, empty, or `1`: a non-loopback bind without `SPARKDASH_TOKEN` stays open. `0`: refuse to start without a token (fail closed). |
 | `SPARKDASH_ALLOWED_HOSTS` | _(empty)_ | Only for a reverse proxy on a custom domain: comma-separated names a loopback bind should also answer to. `localhost`, IP addresses, this machine's hostname and its Tailscale name work without it. |
-| `VULNHUNT_ALLOWED_HOSTS` | _(empty)_ | Security scans: comma-separated host names, no ports (`*.example.org` allowed), a scan may clone from. Empty allows any host the clone policy permits. |
-| `VULNHUNT_RUNS_PATH` / `VULNHUNT_RESULTS_DIR` | `config/vulnhunt-runs.json` / `config/vulnhunt-results` | Where Security scan history and cached reports are kept. |
 | `SPARKDASH_HELPER_HOSTS` | _(empty)_ | Extra hostnames allowed for harness occupancy helpers, comma separated. `localhost`, `127.0.0.1` and `::1` are always allowed. The dashboard connects only to an address from that lookup and does not follow redirects |
 | `OCCUPANCY_POLL_MS` | `15000` | How often the dashboard reads each helper's cache. Clamped to 5–120 seconds |
 | `PORT` | `5555` | HTTP + WebSocket listen port |
@@ -1144,6 +1088,7 @@ Choice is stored in `localStorage`.
 | `npm run docker:up` | `docker compose up -d` |
 | `npm run docker:prod` | Same as `docker:up` |
 | `npm run docker:rebuild` | `docker compose up --build -d` |
+| `npm run docker:multiarch` | Build the arm64 + amd64 variants into one manifest list |
 | `npm run docker:dev` | Dev Compose |
 | `npm run docker:dev:build` | Dev Compose with rebuild |
 | `./deploy.sh` | Recreate container; `--build`, `--frontend` flags |
@@ -1185,6 +1130,7 @@ Each configured LLM port gets its own `LlmProbe` instance running in parallel. P
 - **llama.cpp** — `/slots` for live decode rates; model from `/props`
 - **ds4-server** (Entrpi/ds4-on-spark) — `/v1/models` (`owned_by: ds4.c`) + Prometheus `ds4_*` token counters for live tok/s
 - **EXL3** (ExLlamaV3 `tools/serve_openai.py`) — `/v1/models` (`owned_by: exl3`) or `/health` `{ok, busy}`; live tok/s from `/health` cumulative counters
+- **Flare** (NVIDIA flare-local-inference) — `/v1/models` card with a `flare` object; live tok/s from `flare_generated_tokens_total` / `flare_prefill_tokens_total` counter diffs, cached vs uncached prefill from `flare_cache_reused_tokens_total`, slots, queue, preemptions and KV pool from `flare_*` gauges
 - **q27** (signalnine/q27 engine) — `/v1/models` (`owned_by: q27`) or Prometheus `q27_*` series; live tok/s from `q27_*_processed` counter diffs (completion-based totals as fallback), exact computed-only prefill with the cached/uncached split doubling as the prefix-cache hit rate, TTFT/E2E/ITL p95 histograms, and constant-0 preemptions (FIFO admission, no wait queue)
 - **TensorFold** (ashhart/TensorFold) — `/v1/models` (`owned_by: tensorfold`). No `/metrics`. Live tok/s comes from `/health` when it publishes `prompt_tokens_total`, `completion_tokens_total`, and `prefill_seconds_total` (decode is the completion-counter diff; prefill is prompt tokens ÷ prefill time). The slots tile reads `streams.max` and `requests_running` on CUDA 0.6.0, and `max_batch_size` on MLX. A stock server that only returns `{ok: true}` stays at 0. Decode/prefill benches and the showcase work regardless.
 - **FreeToken** — `/v1/models` (`owned_by: FreeToken`), or a `/v1/stats` document with `throughput.decode_tps` / `prefill_tps` and lifetime prompt/completion totals. Those rates are FreeToken's own 5-second window (0 when idle). `requests.ttft_mean_ms` is a mean; `requests.p95_ms` is end-to-end latency, not TTFT p95. Queue length, slot capacity, and preemptions stay unset.
@@ -1263,11 +1209,17 @@ The [`sparkdash-dgx-cluster`](https://github.com/glanceapp/community-widgets/tre
 **Projects and data sparkDash builds on**
 - [tool-eval-bench](https://github.com/SeraphimSerapis/tool-eval-bench) by SeraphimSerapis (MIT) powers **Tool Eval Bench**. It adapts the scenario methodology of ToolCall-15 by stevibe (MIT) and credits the Typed Decisions dataset from the LocalLLaMA organization (Apache 2.0).
 - **GSM8K** (OpenAI, MIT) and **MMLU** (Dan Hendrycks, MIT) supply the maths and knowledge questions in the Quality bench. The instruction-following category is inspired by **IFEval** (Zhou et al., Google).
-- [REA](https://github.com/morluto/rea) (MIT) by morluto is installed and run on your own unit when you use Tools → REA. sparkDash drives its CLI only and does not bundle any of its code; the pinned lockfile in `server/rea/pinned/` lists the npm packages it installs.
-- [VulnHunter](https://github.com/nealbridges/VulnHunter) (Apache-2.0; a maintained fork of [Capital One's VulnHunter](https://github.com/capitalone/VulnHunter)) is the scanner behind **Security scans**. sparkDash only calls its `vh` CLI on your unit; no VulnHunter code is bundled.
 - [Hermes Agent](https://github.com/nousresearch/hermes-agent) by Nous Research can be monitored and updated from sparkDash.
 - The health findings were inspired by [spark-doctor](https://github.com/joeynyc/spark-doctor) by joeynyc (MIT). No code from it is used.
 - Fonts: [Geist and Geist Mono](https://github.com/vercel/geist-font) by Vercel (SIL Open Font License 1.1). The bolt in the logo follows the "zap" icon from [Feather](https://github.com/feathericons/feather) (MIT).
 - Built with [React](https://react.dev/), [Vite](https://vitejs.dev/), [Tailwind CSS](https://tailwindcss.com/), [Express](https://expressjs.com/), [ws](https://github.com/websockets/ws), [undici](https://github.com/nodejs/undici), [dnd kit](https://dndkit.com/) and [dotenv](https://github.com/motdotla/dotenv). Licenses and copyright notices are in [THIRD_PARTY_NOTICES.md](./THIRD_PARTY_NOTICES.md).
 
 Built for the **NVIDIA DGX Spark (GB10)** on ARM64.
+
+### Cost compare without a price catalog
+
+On a fresh install, Cost compare shows **No price data yet** until a catalog is supplied. Catalog fetching is off by default: set `MODEL_PRICES_FETCH=1` and restart the server to opt in, or pre-seed `MODEL_PRICES_JSON_PATH` for offline use, then click **Retry**. A failed enabled fetch remains an error unless a cached catalog is available. Choose a hosted model explicitly to compare costs; the page does not infer a provider from local model names.
+
+### Interpreting RoCE traffic
+
+The RoCE panel shows netdev byte-counter rates, which do not measure RDMA payload throughput; a busy tensor-parallel link can therefore show little netdev traffic. Pause-frame counters are cumulative totals and are separate from the current PFC setting. RDMA error counters and their deltas remain available in the panel.

@@ -161,7 +161,7 @@ describe("share card model", () => {
     expect(card.host).toBe("spark-38bd");
     expect(card.subtitle).toBe("Port 8888 · DeepSeek-v4.1-Flash-EXL3");
     expect(card.status).toEqual({ label: "COMPLETED", tone: "ok" });
-    expect(card.meta).toBe("Prose · 400 tok · 1, 2 conc · 27.8 s");
+    expect(card.meta).toBe("Prose · 400 tok · temp 0 · thinking off · 1, 2 conc · 27.8 s");
     expect(card.columns).toEqual({ load: "Load", primary: "Aggregate", secondary: "Stream" });
     expect(card.rows).toHaveLength(1);
     expect(card.rows[0]).toMatchObject({
@@ -616,7 +616,7 @@ describe("tool eval share card", () => {
   const run = { status: "completed" as const, startedAt: 1_000, finishedAt: 125_000, model: null };
 
   it("carries the headline numbers, the outcome split and a tile per category", () => {
-    const m = buildToolEvalShareCard(result(), run, { sparkName: "spark-38bd" }, Date.UTC(2026, 8, 17, 12));
+    const m = buildToolEvalShareCard(result(), run, { sparkName: "spark-38bd" }, new Date(2026, 8, 17, 12).getTime());
     const te = m.toolEval!;
     expect([m.title, m.host, m.status.label]).toEqual(["Tool Eval Bench", "spark-38bd", "COMPLETED"]);
     expect([te.score, te.rating, te.stars, te.modelName]).toEqual([82.46, "Good", 4, "org/model"]);
@@ -699,7 +699,8 @@ describe("tool eval comparison card", () => {
       },
       ...over,
     })!;
-  const run = { label: "", startedAt: Date.UTC(2026, 8, 10), model: null, baseUrl: "http://x", options: {}, type: "tool-eval" };
+  // Local noon: shareCardDate formats in local time, so a UTC-midnight start is the 9th west of UTC.
+  const run = { label: "", startedAt: new Date(2026, 8, 10, 12).getTime(), model: null, baseUrl: "http://x", options: {}, type: "tool-eval" };
   const a = () => side(60, [50, 80], ["pass", "fail", "partial", "pass"]);
   const b = () => side(72.5, [70, 75], ["pass", "pass", "fail", "pass"], { deployability: 71, responsiveness: 85 });
 
@@ -721,6 +722,16 @@ describe("tool eval comparison card", () => {
       ["B", 80, 75, "−5.0 pts", "bad"],
     ]);
     expect(shareCardFileName(m, "tool-eval-compare")).toMatch(/^sparkdash-tool-eval-compare-spark-1-/);
+  });
+
+  it("names both Sparks when the runs come from different ones", () => {
+    const m = buildToolEvalCompareShareCard(a(), b(), run, run, { sparkName: "spark-1", sparkNameA: "spark1", sparkNameB: "spark3" }, 0);
+    expect(m.host).toBe("spark1 vs spark3");
+    expect([m.toolEvalCompare!.a.heading, m.toolEvalCompare!.b.heading]).toEqual(["RUN A · spark1 · 2026-09-10", "RUN B · spark3 · 2026-09-10"]);
+    // Same Spark on both sides: no per-Spark naming.
+    const same = buildToolEvalCompareShareCard(a(), b(), run, run, { sparkName: "spark-1", sparkNameA: "spark1", sparkNameB: "spark1" }, 0);
+    expect(same.host).toBe("spark-1");
+    expect(same.toolEvalCompare!.a.heading).toBe("RUN A · 2026-09-10");
   });
 
   it("says when the setups differ and keeps failures off the card", () => {

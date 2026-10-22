@@ -505,7 +505,7 @@ export function LlmPanel({
 
   const fmtTps = (n: number) => (n >= 1000 ? Math.round(n).toLocaleString() : n.toFixed(1));
   const fmtAvg = (n: number) => (n >= 100 ? n.toFixed(0) : n.toFixed(1));
-  const isVllm = llm != null && (llm.backend === "vllm" || llm.backend === "q27" || llm.backend === "radiance");
+  const isVllm = llm != null && (llm.backend === "vllm" || llm.backend === "q27" || llm.backend === "radiance" || llm.backend === "flare");
   // FreeToken reports KV use, active requests and a TTFT mean in /v1/stats; the tiles below are null-gated.
   const isFreeToken = llm?.backend === "freetoken";
   const showEngineTiles = isVllm || isFreeToken || isStrata;
@@ -786,6 +786,14 @@ export function LlmPanel({
               <TrendLine data={genHistory} height={44} color="var(--color-accent)" />
               {genAvg != null && <span className="sp-avg mono">avg {fmtAvg(genAvg)}</span>}
               {isStrata && llm?.generationTpsSource === "slot-mean" && <span className="sp-avg">active-slot mean</span>}
+              {llm?.perStreamTps != null && (
+                <span
+                  className="sp-avg mono"
+                  title="Average decode throughput of one running stream (1 / mean seconds per output token). Only engines that publish a per-token latency histogram report it."
+                >
+                  {fmtTps(llm.perStreamTps)} tok/s per stream
+                </span>
+              )}
               {idleNote && (
                 <span className="sp-avg" data-llm-idle>
                   {idleNote}
@@ -817,6 +825,14 @@ export function LlmPanel({
               <TrendLine data={prefillHistory} height={44} color="var(--color-info)" />
               {prefillAvg != null && <span className="sp-avg mono">avg {fmtAvg(prefillAvg)}</span>}
               {isStrata && prefillTps > 0 && <span className="sp-avg">last reported mean</span>}
+              {llm?.perStreamPrefillTps != null && (
+                <span
+                  className="sp-avg mono"
+                  title="Effective prefill rate of one request: prompt tokens ÷ prefill seconds over the finished window. The prompt counter includes prefix-cache tokens (this surface has no cached counter), so it is an effective speed, not raw GPU speed. The engine publishes prefill seconds only when a request finishes, so it is held between completions."
+                >
+                  {fmtTps(llm.perStreamPrefillTps)} tok/s per request — effective (incl. cached tokens)
+                </span>
+              )}
             </div>
           </div>
           {showPrefillSplit && (

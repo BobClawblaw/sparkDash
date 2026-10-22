@@ -5,7 +5,7 @@
  * `engine` says what runs it: sparkDash's own benches (decode / prefill / quality) or the
  * external tool-eval-bench CLI executed on the Spark.
  */
-export type BenchEngine = "sparkdash" | "tool-eval" | "vulnhunt";
+export type BenchEngine = "sparkdash" | "tool-eval";
 
 export interface BenchType {
   id: string;
@@ -14,7 +14,7 @@ export interface BenchType {
   blurb: string;
   engine: BenchEngine;
   /** Sidebar sub-heading it sits under. */
-  family: "sparkDash" | "Tool Eval Bench" | "VulnHunter";
+  family: "sparkDash" | "Tool Eval Bench";
 }
 
 export const BENCH_TYPES: readonly BenchType[] = [
@@ -22,7 +22,6 @@ export const BENCH_TYPES: readonly BenchType[] = [
   { id: "prefill", label: "Prefill", blurb: "Prompt processing speed and time to first token across context sizes.", engine: "sparkdash", family: "sparkDash" },
   { id: "quality", label: "Quality", blurb: "A fixed, seeded quality suite to compare models, quantisations and KV-cache formats.", engine: "sparkdash", family: "sparkDash" },
   { id: "tool-eval", label: "Tool Eval Bench", blurb: "Tool-calling quality across 69 deterministic scenarios (selection, parameters, multi-step, safety).", engine: "tool-eval", family: "Tool Eval Bench" },
-  { id: "vulnhunt", label: "VulnHunter", blurb: "Agentic source-code security scan of a repository, run on the unit, with proof-of-concept findings.", engine: "vulnhunt", family: "VulnHunter" },
 ];
 
 const BY_ID = new Map(BENCH_TYPES.map((b) => [b.id, b]));

@@ -34,8 +34,6 @@ const settings = {
   showVramBreakdown: true,
   prometheusExport: false,
   intelVramSudo: false,
-  vulnhuntEnabled: false,
-  reaEnabled: false,
   occupancyMaxAgeMs: 12 * 60 * 60 * 1000,
 } satisfies Settings;
 

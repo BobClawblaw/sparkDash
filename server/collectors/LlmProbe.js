@@ -103,7 +103,7 @@ export class LlmProbe {
     this._openTunnel = openSshLlmTunnel;
 
     // State
-    this.backendType = null; // 'vllm' | 'llama.cpp' | 'sglang' | 'lmstudio' | 'ollama' | 'ds4' | 'exl3' | 'q27' | 'tensorfold' | 'freetoken' | 'radiance' | 'strata' | null
+    this.backendType = null; // 'vllm' | 'llama.cpp' | 'sglang' | 'lmstudio' | 'ollama' | 'ds4' | 'exl3' | 'q27' | 'tensorfold' | 'freetoken' | 'radiance' | 'strata' | 'flare' | null
     this.serverIsOpenAI = null; // true = OpenAI-compatible
     /** Whether /v1/models (or /slots) answered without credentials. null = unknown. */
     this.authOpen = null;
@@ -136,6 +136,31 @@ export class LlmProbe {
     this._tensorfoldLastPrefill = null;
     /** Previous TensorFold /metrics `generation_tokens_total + generation_tokens_running`. */
     this._tensorfoldPromProduced = null;
+    /**
+     * Average decode tok/s of ONE stream (TensorFold): 1 / mean seconds per
+     * output token over the last poll window, from the server's own TPOT
+     * histogram. null when the backend reports no such histogram; held (not
+     * zeroed) across a window in which no request finished, because the
+     * histogram only updates on completion.
+     */
+    this.perStreamTps = null;
+    /** Previous `tensorfold:request_time_per_output_token_seconds` _count / _sum. */
+    this._tensorfoldTpotCount = null;
+    this._tensorfoldTpotSum = null;
+    /**
+     * Effective prefill tok/s of ONE request (TensorFold /metrics-only builds):
+     * Δprompt_tokens_total / Δprefill-seconds over finished requests. Labeled
+     * "effective" because prompt_tokens_total includes prefix-cache hits and
+     * the engine exposes no cached counter on /metrics. null until a request
+     * with prefill time has finished; held (not zeroed) between completions.
+     */
+    this.perStreamPrefillTps = null;
+    /** When the last SANITY-PASSING prefill measurement was taken (hold expires after 20 s). */
+    this._tensorfoldPrefillMeasuredAt = null;
+    /** Previous prompt_tokens_total / prefill histogram _sum / _count for the /metrics prefill window. */
+    this._tensorfoldPromptTokens = null;
+    this._tensorfoldPrefillSum = null;
+    this._tensorfoldPrefillCount = null;
     this.prefillActive = false;
     /** Previous prefill counters by kind; null until first labeled sample. */
     this.lastPrefillKinds = null;
@@ -435,6 +460,14 @@ export class LlmProbe {
     this._tensorfoldPrevCached = null;
     this._tensorfoldLastPrefill = null;
     this._tensorfoldPromProduced = null;
+    this.perStreamTps = null;
+    this._tensorfoldTpotCount = null;
+    this._tensorfoldTpotSum = null;
+    this.perStreamPrefillTps = null;
+    this._tensorfoldPrefillMeasuredAt = null;
+    this._tensorfoldPromptTokens = null;
+    this._tensorfoldPrefillSum = null;
+    this._tensorfoldPrefillCount = null;
     this.prefillActive = false;
     this.lastPrefillKinds = null;
     this.lastTtftSum = null;
@@ -499,7 +532,8 @@ export class LlmProbe {
       this.backendType !== "q27" &&
       this.backendType !== "tensorfold" &&
       this.backendType !== "freetoken" &&
-      this.backendType !== "radiance"
+      this.backendType !== "radiance" &&
+      this.backendType !== "flare"
     ) {
       const slotUrl = `${this.baseUrl}/slots`;
       try {
@@ -528,16 +562,25 @@ export class LlmProbe {
       if (auth === "ok" || auth === "auth") {
         this.serverIsOpenAI = true;
         let owned = null;
+        let flareCard = false;
         if (auth === "ok") {
           try {
             const modelsData = await modelRes.json();
             const records = Array.isArray(modelsData?.data) ? modelsData.data : [];
             owned = records.find((model) => typeof model?.id === "string" && model.id.trim().length > 0)?.owned_by;
+            flareCard = LlmProbe._modelsLookLikeFlare(records);
           } catch {
             /* body optional for detection */
           }
         }
-        this.backendType = await this._classifyOpenAIBackend(owned);
+        // llama-server's OpenAI card says owned_by "llamacpp"; its tok/s lives in /slots,
+        // so don't let a first contact that missed /slots lock it in as vLLM.
+        if (typeof owned === "string" && /^llama\.?cpp$/i.test(owned)) {
+          this.serverIsOpenAI = false;
+          this.backendType = "llama.cpp";
+          return;
+        }
+        this.backendType = await this._classifyOpenAIBackend(owned, flareCard);
         return;
       }
     } catch {}
@@ -548,16 +591,19 @@ export class LlmProbe {
 
   /**
    * Classify an OpenAI-compatible server: LM Studio, Ollama, ds4, SGLang,
-   * EXL3, q27, TensorFold, FreeToken, or vLLM (default).
+   * EXL3, q27, TensorFold, FreeToken, Flare, or vLLM (default).
    * @param {unknown} ownedBy
-   * @returns {Promise<"lmstudio" | "ollama" | "ds4" | "sglang" | "exl3" | "q27" | "tensorfold" | "freetoken" | "radiance" | "vllm">}
+   * @param {boolean} [flareCard] `/v1/models` carried Flare's `flare` object (its
+   *   `owned_by` is the generic "local", so the card shape is the signal)
+   * @returns {Promise<"lmstudio" | "ollama" | "ds4" | "sglang" | "exl3" | "q27" | "tensorfold" | "freetoken" | "radiance" | "flare" | "vllm">}
    */
-  async _classifyOpenAIBackend(ownedBy) {
+  async _classifyOpenAIBackend(ownedBy, flareCard = false) {
     // LM Studio first: it answers 200 + JSON on every path, so the heuristic
     // probes below (notably SGLang's /server_info) would misfire on it.
     if (await this._probeIsLmStudio()) return "lmstudio";
     // Ollama second: its native /api/tags contract is unique among engines.
     if (await this._probeIsOllama()) return "ollama";
+    if (flareCard) return "flare";
     if (typeof ownedBy === "string") {
       if (/ds4/i.test(ownedBy)) return "ds4";
       if (/sglang/i.test(ownedBy)) return "sglang";
@@ -577,6 +623,7 @@ export class LlmProbe {
     if (await this._probeIsSglang()) return "sglang";
     if (await this._probeIsExl3()) return "exl3";
     if (await this._probeIsQ27()) return "q27";
+    if (await this._probeIsFlare()) return "flare";
     if (await this._probeIsFreeToken()) return "freetoken";
     return "vllm";
   }
@@ -739,6 +786,36 @@ export class LlmProbe {
     );
   }
 
+  /**
+   * True when a `/v1/models` list carries NVIDIA Flare's model card. Helios
+   * reports `owned_by: "local"` and adds a `flare` object with its serving limits.
+   * @param {unknown} records
+   */
+  static _modelsLookLikeFlare(records) {
+    if (!Array.isArray(records)) return false;
+    return records.some((m) => {
+      const f = m?.flare;
+      return !!f && typeof f === "object" && !Array.isArray(f) && "max_concurrency" in f && "prefill_chunk_size" in f;
+    });
+  }
+
+  /** True when Prometheus /metrics exposes Flare (Helios) series. */
+  async _probeIsFlare() {
+    try {
+      const res = await this._fetch(`${this.baseUrl}/metrics`);
+      if (!res.ok) return false;
+      const txt = await res.text();
+      return LlmProbe._metricsLookLikeFlare(txt);
+    } catch {
+      return false;
+    }
+  }
+
+  /** @param {string} body */
+  static _metricsLookLikeFlare(body) {
+    return /(?:^|\n)flare_generated_tokens_total(?:\{|\s)/m.test(String(body || ""));
+  }
+
   // ─── OpenAI-compatible path (vLLM/sglang/ds4) ────────────
   async _probeOpenAICompatible() {
     const now = Date.now();
@@ -748,6 +825,8 @@ export class LlmProbe {
     // Model info from /v1/models — 401/403 means protected; other failure = down
     let modelsOk = false;
     let owned = null;
+    let flareCard = false;
+    let flareInfo = null;
     let servedModelId = null;
     this.models = [];
     try {
@@ -775,6 +854,8 @@ export class LlmProbe {
         this.contextLength =
           model?.max_model_len ?? model?.context_length ?? null;
         owned = model?.owned_by;
+        flareCard = LlmProbe._modelsLookLikeFlare(validModels);
+        flareInfo = flareCard ? model.flare : null;
       }
     } catch {}
 
@@ -783,7 +864,9 @@ export class LlmProbe {
     }
 
     // Self-heal backend from owned_by before branching (cheap, no extra HTTP)
-    if (typeof owned === "string") {
+    if (flareCard && this.backendType !== "ds4") {
+      this.backendType = "flare";
+    } else if (typeof owned === "string") {
       if (/ds4/i.test(owned)) this.backendType = "ds4";
       else if (/sglang/i.test(owned) && this.backendType !== "ds4") {
         this.backendType = "sglang";
@@ -862,6 +945,23 @@ export class LlmProbe {
         }
       } catch {
         this._applyTensorFoldHealth(null, dtSec);
+      }
+      return this._getSnapshot();
+    }
+
+    // Flare (NVIDIA Helios): Prometheus counters on /metrics, limits on the model card.
+    if (this.backendType === "flare") {
+      this._clearEngineMemory();
+      try {
+        const metricsRes = await this._fetch(`${this.baseUrl}/metrics`);
+        this._noteAuthStatus(metricsRes.status);
+        if (metricsRes.ok) {
+          this._applyFlareMetrics(await metricsRes.text(), dtSec, flareInfo);
+        } else {
+          this._clearFlareRates();
+        }
+      } catch {
+        this._clearFlareRates();
       }
       return this._getSnapshot();
     }
@@ -1208,6 +1308,80 @@ export class LlmProbe {
     const specAccept = this._getPromMetric(txt, "q27_spec_accept_ratio");
     this.mtpAcceptanceRate =
       specAccept != null ? Math.round(specAccept * 10000) / 10000 : null;
+  }
+
+  /**
+   * Apply NVIDIA Flare (Helios) Prometheus /metrics.
+   *
+   * Live tok/s from counter deltas so idle → 0. `flare_prefill_tokens_total`
+   * counts computed prompt tokens only (prefix reuse excluded), so it is the
+   * uncached side of the split; `flare_cache_reused_tokens_total` is the cached
+   * side. The KV pool is reported in logical tokens. Flare has no waiting-queue
+   * histograms or sleep state; the Preempts tile reads the preemption counter.
+   * @param {string} txt
+   * @param {number} dtSec
+   * @param {Record<string, unknown> | null} [card] the model card's `flare` object
+   */
+  _applyFlareMetrics(txt, dtSec, card = null) {
+    const generated = this._getPromMetric(txt, "flare_generated_tokens_total");
+    const computed = this._getPromMetric(txt, "flare_prefill_tokens_total");
+    const cached = this._getPromMetric(txt, "flare_cache_reused_tokens_total");
+    if (generated != null) {
+      if (dtSec > 0 && dtSec < 10) {
+        const deltaOut = generated - this.lastTokenCounts.output;
+        this.generationTps = Math.max(0, Math.round((deltaOut / dtSec) * 100) / 100);
+        if (computed != null) {
+          const deltaIn = computed - this.lastTokenCounts.input;
+          this.prefillTps = Math.max(0, Math.round((deltaIn / dtSec) * 100) / 100);
+        }
+      }
+      if (computed != null) this.lastTokenCounts.input = computed;
+      this.lastTokenCounts.output = generated;
+      this.totalOutputTokens = generated;
+      if (computed != null) {
+        this.totalPromptTokens = cached != null ? computed + cached : computed;
+      }
+      if (cached != null) this.totalCachedTokens = cached;
+    }
+    this._setPrefillSplitRates(cached, computed, dtSec);
+
+    const active = this._getPromMetric(txt, "flare_active_requests");
+    const freeSlots = this._getPromMetric(txt, "flare_free_request_slots");
+    const cardSlots = Number(card?.max_concurrency);
+    this.requestsRunning = active;
+    if (active != null) this.slotsActive = Math.round(active);
+    if (Number.isFinite(cardSlots) && cardSlots > 0) this.slotsTotal = Math.round(cardSlots);
+    else if (active != null && freeSlots != null) this.slotsTotal = Math.round(active + freeSlots);
+    this.requestsWaiting = this._getPromMetric(txt, "flare_pending_requests");
+    this.preemptionsTotal = this._getPromMetric(txt, "flare_preemptions_total");
+
+    const totalKv = this._getPromMetric(txt, "flare_total_kv_tokens");
+    const freeKv = this._getPromMetric(txt, "flare_free_kv_tokens");
+    if (totalKv != null && totalKv > 0 && freeKv != null) {
+      const free = Math.min(totalKv, Math.max(0, freeKv));
+      this.kvCacheTokens = Math.round(totalKv);
+      this.kvCacheTokensAvailable = Math.round(free);
+      this.kvCacheUsage = Math.round((1 - free / totalKv) * 10000) / 10000;
+    } else {
+      this._clearKvPool();
+      this.kvCacheUsage = null;
+    }
+    this.ttftP95Seconds = null;
+    this.ttftSeconds = null;
+    this.e2eP95Seconds = null;
+    this.itlP95Seconds = null;
+    this.mtpAcceptanceRate = null;
+    // Weights stay resident whenever the server is up (no sleep state).
+    if (this.gpuMemoryUtilization == null) this.gpuMemoryUtilization = 1;
+  }
+
+  /** Drop live Flare rates after a failed `/metrics`. Totals stay. */
+  _clearFlareRates() {
+    this.generationTps = 0;
+    this.prefillTps = 0;
+    this.cachedPrefillTps = null;
+    this.uncachedPrefillTps = null;
+    this.lastPrefillKinds = null;
   }
 
   /**
@@ -1613,17 +1787,183 @@ export class LlmProbe {
         this.generationTps = Math.max(0, Math.round(((produced - prev) / dtSec) * 100) / 100);
       }
     }
-    const running = queueOnly ? null : m("requests_running");
+    // One source of truth for the concurrency count. TensorFold exports both
+    // `requests_running` and the vLLM-style alias `num_requests_running` with
+    // identical values (verified live); read the canonical name and fall back
+    // to the alias only when the canonical series is absent. Never sum them.
+    let running = queueOnly ? null : m("requests_running");
+    if ((!Number.isFinite(running) || running < 0) && !queueOnly) running = m("num_requests_running");
     if (Number.isFinite(running) && running >= 0) {
       this.requestsRunning = Math.round(running);
       this.slotsActive = Math.round(running);
     }
-    const waiting = m("requests_waiting");
+    let waiting = m("requests_waiting");
+    if (!Number.isFinite(waiting) || waiting < 0) waiting = m("num_requests_waiting");
     if (Number.isFinite(waiting) && waiting >= 0) this.requestsWaiting = Math.round(waiting);
+
+    if (!queueOnly) {
+      // TensorFold exposes Prometheus histograms under the same names as its
+      // vLLM-compatible aliases. A malformed/partial histogram yields null,
+      // never a guessed percentile.
+      const p95 = (metric) => {
+        const hist = this._parseHistogram(txt, `tensorfold:${metric}`, `tensorfold:${metric}_count`);
+        const { buckets, total } = hist;
+        if (!Number.isFinite(total) || total <= 0 || !buckets.length) return null;
+        const last = buckets[buckets.length - 1];
+        if (last.upper !== Infinity || Math.abs(last.count - total) > 1e-6) return null;
+        let previousCount = 0;
+        let previousUpper = -Infinity;
+        for (const { upper, count } of buckets) {
+          if (!Number.isFinite(count) || count < previousCount || count > total ||
+              upper < 0 || upper <= previousUpper || (upper !== Infinity && !Number.isFinite(upper))) return null;
+          previousCount = count;
+          previousUpper = upper;
+        }
+        const value = this._histogramQuantile(buckets, total, 0.95);
+        return value == null ? null : Math.round(value * 1000) / 1000;
+      };
+      this.ttftP95Seconds = p95("time_to_first_token_seconds");
+      this.e2eP95Seconds = p95("request_latency_seconds");
+      this.itlP95Seconds = p95("request_time_per_output_token_seconds");
+
+      const mean = (metric) => {
+        const sum = this._getPromMetric(txt, `tensorfold:${metric}_sum`);
+        const count = this._getPromMetric(txt, `tensorfold:${metric}_count`);
+        if (!Number.isFinite(sum) || sum < 0 || !Number.isFinite(count) || count <= 0) return null;
+        return Math.round((sum / count) * 1000) / 1000;
+      };
+      this.ttftSeconds = mean("time_to_first_token_seconds");
+
+      const queries = m("prefix_cache_queries_total");
+      const hits = m("prefix_cache_hits_total");
+      this.prefixCacheHitRate =
+        Number.isFinite(queries) && queries > 0 && Number.isFinite(hits)
+          ? Math.max(0, Math.min(1, hits / queries))
+          : null;
+
+      const preemptions = m("preemptions_total");
+      this.preemptionsTotal =
+        Number.isFinite(preemptions) && preemptions >= 0 ? Math.round(preemptions) : null;
+    }
+
+    const kv = queueOnly ? null : m("kv_cache_usage_ratio");
+    if (Number.isFinite(kv) && kv >= 0) this.kvCacheUsage = Math.min(1, kv);
     const drafted = queueOnly ? null : m("mtp_drafted_total");
     const accepted = queueOnly ? null : m("mtp_accepted_total");
     if (Number.isFinite(drafted) && drafted > 0 && Number.isFinite(accepted)) {
       this.mtpAcceptanceRate = Math.max(0, Math.min(1, accepted / drafted));
+    }
+    // Per-stream decode rate from the server's own time-per-output-token
+    // histogram: 1 / mean over the tokens finished since the last poll. The
+    // histogram only moves when a request finishes, so with no finished
+    // request in this window the previous value is held rather than flashed
+    // to 0; with no histogram at all, fall back to aggregate / active streams.
+    if (!queueOnly) {
+      const tpotCount = m("request_time_per_output_token_seconds_count");
+      const tpotSum = m("request_time_per_output_token_seconds_sum");
+      if (Number.isFinite(tpotCount) && Number.isFinite(tpotSum) && tpotCount >= 0 && tpotSum >= 0) {
+        if (
+          this._tensorfoldTpotCount != null &&
+          this._tensorfoldTpotSum != null &&
+          tpotCount >= this._tensorfoldTpotCount
+        ) {
+          const dCount = tpotCount - this._tensorfoldTpotCount;
+          const dSum = tpotSum - this._tensorfoldTpotSum;
+          if (dCount > 0 && dSum > 0) {
+            this.perStreamTps = Math.max(0, Math.round((dCount / dSum) * 100) / 100);
+          }
+        }
+        this._tensorfoldTpotCount = tpotCount;
+        this._tensorfoldTpotSum = tpotSum;
+      } else {
+        const running = Number(this.requestsRunning);
+        const gen = Number(this.generationTps);
+        if (Number.isFinite(gen) && gen > 0 && Number.isFinite(running) && running > 0) {
+          this.perStreamTps = Math.max(0, Math.round((gen / running) * 100) / 100);
+        } else if ((Number.isFinite(running) ? running : 0) <= 0 && (!(Number.isFinite(gen)) || gen <= 0)) {
+          // Truly idle with nothing ever measured: no per-stream rate to show.
+          this.perStreamTps = null;
+        }
+      }
+    }
+    // Prefill on /metrics-only builds (verified on a live server): during a
+    // 35-second prefill prompt_tokens_total AND every prefill histogram stay
+    // frozen — they advance only in the poll where the request finishes. So no
+    // mid-prefill rate exists; derive the effective per-request rate from the
+    // completion window and HOLD it until the next finish, with a "prefilling"
+    // indicator while a request is open and no tokens have been produced yet.
+    // CAVEAT: prompt_tokens_total counts prefix-cache tokens too and this
+    // surface has no cached counter — the number is an effective rate, not raw
+    // GPU compute speed (the label says so).
+    if (!queueOnly && Number.isFinite(dtSec) && dtSec > 0) {
+      let prefillPrefix = null;
+      if (m("request_prefill_seconds_count") != null) prefillPrefix = "request_prefill_seconds";
+      else if (m("request_prefill_time_seconds_count") != null) prefillPrefix = "request_prefill_time_seconds";
+      if (prefillPrefix && Number.isFinite(prompt) && prompt >= 0) {
+        const pSum = m(`${prefillPrefix}_sum`);
+        const pCount = m(`${prefillPrefix}_count`);
+        if (Number.isFinite(pSum) && Number.isFinite(pCount) && pSum >= 0 && pCount >= 0) {
+          const prevPrompt = this._tensorfoldPromptTokens;
+          const prevSum = this._tensorfoldPrefillSum;
+          const prevCount = this._tensorfoldPrefillCount;
+          if (
+            prevPrompt != null && prevSum != null && prevCount != null &&
+            prompt >= prevPrompt && pSum >= prevSum && pCount >= prevCount
+          ) {
+            const dPrompt = prompt - prevPrompt;
+            const dSec = pSum - prevSum;
+            if (pCount > prevCount && dPrompt > 0) {
+              // Sub-millisecond and tiny-prompt windows are too noisy to
+              // measure reliably: require at least 50 ms and 50 tokens.
+              // Effective rates include cache credit and vary by host; do not
+              // cap them using one machine's cold-compute throughput.
+              const rate = Math.round((dPrompt / dSec) * 100) / 100;
+              if (dSec >= 0.05 && dPrompt >= 50) {
+                // Window ratio = mean over the requests finished in it; the
+                // aggregate is the same measurement (no per-request split here).
+                this.perStreamPrefillTps = Math.max(0, rate);
+                this._tensorfoldPrefillMeasuredAt = Date.now();
+                // Wins over the /health zeroing that ran earlier this poll.
+                this.prefillTps = this.perStreamPrefillTps;
+              } else if (
+                this.perStreamPrefillTps != null &&
+                this._tensorfoldPrefillMeasuredAt != null &&
+                Date.now() - this._tensorfoldPrefillMeasuredAt < 20_000
+              ) {
+                // Hold across polls (and across rejected noise windows), but
+                // expire like the /health path: a stale rate must not masquerade
+                // as current, and _applyExl3Health zeroes it every poll anyway.
+                this.prefillTps = this.perStreamPrefillTps;
+              } else {
+                this.perStreamPrefillTps = null;
+                this.prefillTps = 0;
+              }
+            } else if (
+              this.perStreamPrefillTps != null &&
+              this._tensorfoldPrefillMeasuredAt != null &&
+              Date.now() - this._tensorfoldPrefillMeasuredAt < 20_000
+            ) {
+              // Hold across polls: _applyExl3Health zeroes prefillTps from the
+              // counterless /health every poll, so re-state the last real rate.
+              this.prefillTps = this.perStreamPrefillTps;
+            } else {
+              this.perStreamPrefillTps = null;
+              this.prefillTps = 0;
+            }
+          }
+          // Server restart / counter reset: re-seed, keep the held rate.
+          this._tensorfoldPromptTokens = prompt;
+          this._tensorfoldPrefillSum = pSum;
+          this._tensorfoldPrefillCount = pCount;
+        }
+      }
+      // The only live prefill signal this build has: a request is open and no
+      // decode has been produced yet. (Queue-only waits keep running at 0.)
+      const openReq = Number.isFinite(this.requestsRunning) && this.requestsRunning > 0;
+      const genRunning = m("generation_tokens_running");
+      if (openReq && Number.isFinite(genRunning)) {
+        this.prefillActive = genRunning === 0;
+      }
     }
   }
 
@@ -2626,6 +2966,8 @@ export class LlmProbe {
       slotsActive: this.slotsActive,
       slotsTotal: this.slotsTotal,
       generationTps: this.generationTps,
+      perStreamTps: this.perStreamTps,
+      perStreamPrefillTps: this.perStreamPrefillTps,
       prefillTps: this.prefillTps,
       decodeActive: this.decodeActive === true,
       generationTpsSource: this.generationTpsSource,
@@ -2668,6 +3010,8 @@ export class LlmProbe {
       slotsActive: 0,
       slotsTotal: 0,
       generationTps: 0,
+      perStreamTps: null,
+      perStreamPrefillTps: null,
       prefillTps: 0,
       decodeActive: false,
       generationTpsSource: null,

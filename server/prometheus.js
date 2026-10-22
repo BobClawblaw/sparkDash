@@ -123,6 +123,16 @@ export const METRIC_FAMILIES = [
     help: "Decode throughput over the last poll interval, from the engine's token counters.",
   },
   {
+    name: "sparkdash_llm_per_stream_tokens_per_second",
+    type: "gauge",
+    help: "Average decode throughput of one running stream (1 / mean seconds per output token). Only engines with a per-token histogram report it.",
+  },
+  {
+    name: "sparkdash_llm_per_stream_prefill_tokens_per_second",
+    type: "gauge",
+    help: "Effective prefill throughput of one request (prompt tokens incl. prefix-cache hits divided by prefill seconds, over finished requests). Held between completions; engines publish prefill time only when a request finishes.",
+  },
+  {
     name: "sparkdash_llm_prefill_tokens_per_second",
     type: "gauge",
     help: "Prefill (prompt processing) throughput over the last poll interval.",
@@ -324,6 +334,8 @@ function addLlm(samples, base, snapshot) {
     samples.add("sparkdash_llm_up", labels, entry.available === true ? 1 : 0);
     if (entry.available !== true) return;
     samples.add("sparkdash_llm_generation_tokens_per_second", labels, entry.generationTps);
+    samples.add("sparkdash_llm_per_stream_tokens_per_second", labels, entry.perStreamTps);
+    samples.add("sparkdash_llm_per_stream_prefill_tokens_per_second", labels, entry.perStreamPrefillTps);
     samples.add("sparkdash_llm_prefill_tokens_per_second", labels, entry.prefillTps);
     samples.add("sparkdash_llm_kv_cache_usage_ratio", labels, entry.kvCacheUsage);
     samples.add("sparkdash_llm_requests_running", labels, entry.requestsRunning);

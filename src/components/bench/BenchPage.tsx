@@ -5,7 +5,6 @@ import { BenchSparksContext } from "./SparkChips";
 import { useBenchSpark } from "./useBenchSpark";
 import { DecodeBenchPage, PrefillBenchPage, QualityBenchPage } from "./sparkdash";
 import { ToolEvalBenchPage } from "./tooleval/ToolEvalBenchPage";
-import { VulnHuntBenchPage } from "../SecurityPage/SecurityPage";
 
 interface BenchPageProps {
   type: string;
@@ -22,7 +21,6 @@ export function BenchPage({ type, sparks, benchShareImage = false }: BenchPagePr
   else if (type === "decode") body = <DecodeBenchPage spark={spark} benchShareImage={benchShareImage} />;
   else if (type === "prefill") body = <PrefillBenchPage spark={spark} benchShareImage={benchShareImage} />;
   else if (type === "quality") body = <QualityBenchPage spark={spark} benchShareImage={benchShareImage} />;
-  else if (type === "vulnhunt") body = <VulnHuntBenchPage spark={spark} />;
   else body = <ToolEvalBenchPage type={type} spark={spark} />;
   // The sparkDash benches fold the Spark chips into their own target row (with Remote).
   const ownsPicker = bench?.engine === "sparkdash";

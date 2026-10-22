@@ -48,7 +48,7 @@ describe("decode served-model selection", () => {
     choose("beta");
     await act(async () => { button("Run benchmark").click(); button("Run benchmark").click(); });
     expect(startDecodeBench).toHaveBeenCalledTimes(1);
-    expect(startDecodeBench).toHaveBeenCalledWith("spark-a", { port: 8888, modelId: "beta", maxTokens: 400, concurrencies: [1, 2], promptType: "structured" });
+    expect(startDecodeBench).toHaveBeenCalledWith("spark-a", { port: 8888, modelId: "beta", maxTokens: 400, concurrencies: [1, 2], promptType: "structured", temperature: 0.7, thinking: false });
     expect(picker()!.disabled).toBe(true);
   });
 

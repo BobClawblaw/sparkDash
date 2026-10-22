@@ -394,18 +394,6 @@ export function SettingsDialog({ open, onClose, onSaved, onOpenHarness }: Settin
                 onChange={(v) => update({ intelVramSudo: v })}
               />
               <ToggleRow
-                title="VulnHunter scans"
-                help="Lets the VulnHunter page (Benchmarks) install VulnHunter on a unit, save your agent harness's command there and run scans. A scan starts an AI agent on the unit as its SSH user, so this is off by default; anyone who can reach this dashboard can use it once it is on, so set SPARKDASH_TOKEN if others can."
-                checked={Boolean(settings.vulnhuntEnabled)}
-                onChange={(v) => update({ vulnhuntEnabled: v })}
-              />
-              <ToggleRow
-                title="REA (reverse engineering)"
-                help="Lets the REA page (Tools) install REA on a unit, upload files to it and run analyses there as its SSH user. REA parses untrusted binaries and some workflows run the target; it is off by default, and anyone who can reach this dashboard can use it once it is on, so set SPARKDASH_TOKEN if others can."
-                checked={Boolean(settings.reaEnabled)}
-                onChange={(v) => update({ reaEnabled: v })}
-              />
-              <ToggleRow
                 title="Metrics history"
                 help="Keeps 48 hours of 1-minute and 30 days of 15-minute history per unit on the server (GPU, memory headroom, CPU, network, LLM tok/s and KV; at most about 1 MB per unit on disk) and charts it in a History panel on each unit's page. Off by default."
                 checked={Boolean(settings.metricsHistory)}
@@ -520,7 +508,7 @@ export function SettingsDialog({ open, onClose, onSaved, onOpenHarness }: Settin
           {/* Outside the settings block: a rejected token is exactly when settings fail to load. */}
           <SettingRow
             title="Access token"
-            help="This browser's copy of the server's token, sent to servers that already require one. It cannot turn protection on: set SPARKDASH_TOKEN in the host's .env and recreate the container. Stored in this browser only."
+            help="Sent to servers that set SPARKDASH_TOKEN. Stored in this browser only."
           >
             <div className="set-token">
               <span className={`set-token__state${tokenSet ? " is-set" : ""}`} data-testid="access-token-state">

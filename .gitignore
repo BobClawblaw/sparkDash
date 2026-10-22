@@ -29,8 +29,6 @@ config/bench-exports/
 .DS_Store
 docs/
 mockups/
-AGENTS.md
-CODEBASE.md
 PLAN.md
 tetris.html
 .zcode/
@@ -43,8 +41,6 @@ config/occupancy-helpers.json
 config/llm-launchers.json
 config/tool-eval-runs.json
 config/tool-eval-results/
-config/vulnhunt-runs.json
-config/vulnhunt-results/
 config/gpu-history.json
 config/gpu-history-long.json
 config/metrics-history.json
@@ -52,5 +48,3 @@ config/metrics-history.json.corrupt-*
 config/fleet-energy.scope-*.json
 config/*.tmp
 config/*.json.*.tmp
-config/rea-runs.json
-config/rea-results/
