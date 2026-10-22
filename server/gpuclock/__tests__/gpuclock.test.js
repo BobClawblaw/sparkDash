@@ -580,6 +580,133 @@ exit 1
   }
 });
 
+/** sudo narrowed to the nvidia-smi commands: no root shell, no `sudo rm`. */
+function narrowRootlessSudo(sb) {
+  fs.writeFileSync(
+    path.join(sb.bin, "sudo"),
+    `#!/bin/sh
+[ "$1" = "-n" ] && shift
+case "$1" in
+  -v | -l) exit 0 ;;
+  */nvidia-smi) exec "$@" ;;
+esac
+exit 1
+`,
+    { mode: 0o755 }
+  );
+}
+
+test("reset refuses before unlocking when a root-written marker is out of reach of a narrowed sudo", (t) => {
+  // The root-owned /run/sparkdash is a directory this user cannot write; root ignores mode bits.
+  if (process.getuid?.() === 0) return t.skip("needs a non-root user: root can write any directory");
+  const sb = sandbox({ cron: true });
+  const home = path.join(sb.root, "home");
+  const runDir = path.join(sb.root, "run");
+  fs.mkdirSync(home);
+  try {
+    narrowRootlessSudo(sb);
+    const paths = { ...sb.paths, sandbox: false, systemctl: "systemctl" };
+    const env = { ...process.env, HOME: home, PATH: `${sb.bin}:${process.env.PATH}` };
+    const boot = sb.read("boot_id").trim();
+    // Capped this boot while sudo still reached a root shell: the marker sits in
+    // the root-owned run dir, and an @reboot job keeps the cap.
+    sb.write("lock", "0,2100\n");
+    sb.write(`run/${MARKER_FILE}`, `2100 ${boot}\n`);
+    const cron = "0 4 * * * /usr/local/bin/backup.sh\n@reboot /usr/bin/sudo -n /usr/bin/nvidia-smi -lgc 0,2100 # sparkdash-gpu-clock-cap\n";
+    sb.write("crontab", cron);
+    fs.chmodSync(runDir, 0o555);
+    const unchanged = (what) => {
+      assert.equal(sb.lockText(), "0,2100", `${what}: the GPU is still capped`);
+      assert.equal(sb.read(`run/${MARKER_FILE}`), `2100 ${boot}\n`, `${what}: the marker is still there`);
+      assert.equal(sb.cronText(), cron, `${what}: the boot hook is untouched`);
+      const status = sb.run(buildStatusProgram(paths), { env });
+      assert.equal(status.CAP, "2100", `${what}: the status reads the cap that is in force`);
+      assert.equal(status.CRON_INSTALLED, "1", what);
+      assert.doesNotMatch(sb.calls(), /nvidia-smi -rgc|crontab (-r|\/)/, what);
+    };
+    unchanged("before");
+
+    const res = sb.run(buildResetProgram(paths), { env });
+    assert.equal(res.CODE, "marker-failed");
+    // MSG is capped at 300 characters, and the sandbox paths are long.
+    assert.match(res.MSG, /cannot be removed by this user .* nothing was changed\. Remove it as root/);
+    unchanged("dashboard reset");
+
+    let err;
+    try {
+      execFileSync("sh", ["-c", buildManualCommand("reset", {}, paths)], { encoding: "utf8", env, stdio: ["ignore", "pipe", "pipe"] });
+    } catch (e) {
+      err = e;
+    }
+    assert.equal(err?.status, 1, "the manual command must fail");
+    assert.match(err.stderr, /Error: the recorded cap .* cannot be removed by this user/);
+    unchanged("manual reset");
+
+    // Once the marker is within reach, the same reset clears the cap, its marker and its hook.
+    fs.chmodSync(runDir, 0o755);
+    assert.equal(sb.run(buildResetProgram(paths), { env }).RESULT, "ok");
+    assert.equal(sb.lockText(), null);
+    assert.equal(sb.read(`run/${MARKER_FILE}`), null);
+    assert.equal(sb.cronText(), "0 4 * * * /usr/local/bin/backup.sh\n");
+    const status = sb.run(buildStatusProgram(paths), { env });
+    assert.equal(status.CAP, "");
+    assert.equal(status.CRON_INSTALLED, "0");
+  } finally {
+    fs.chmodSync(runDir, 0o755);
+    sb.cleanup();
+  }
+});
+
+test("applying a new cap refuses before capping when a root-written marker is out of reach of a narrowed sudo", (t) => {
+  // The root-owned /run/sparkdash is a directory this user cannot write; root ignores mode bits.
+  if (process.getuid?.() === 0) return t.skip("needs a non-root user: root can write any directory");
+  const sb = sandbox({ cron: true });
+  const home = path.join(sb.root, "home");
+  const runDir = path.join(sb.root, "run");
+  const altMarker = path.join(home, ".config", "sparkdash", MARKER_FILE);
+  fs.mkdirSync(home);
+  try {
+    narrowRootlessSudo(sb);
+    const paths = { ...sb.paths, sandbox: false, systemctl: "systemctl" };
+    const env = { ...process.env, HOME: home, PATH: `${sb.bin}:${process.env.PATH}` };
+    const boot = sb.read("boot_id").trim();
+    // Capped at 2100 this boot while sudo still reached a root shell; an @reboot job keeps it.
+    sb.write("lock", "0,2100\n");
+    sb.write(`run/${MARKER_FILE}`, `2100 ${boot}\n`);
+    const cron = "0 4 * * * /usr/local/bin/backup.sh\n@reboot /usr/bin/sudo -n /usr/bin/nvidia-smi -lgc 0,2100 # sparkdash-gpu-clock-cap\n";
+    sb.write("crontab", cron);
+    fs.chmodSync(runDir, 0o555);
+    const unchanged = (what) => {
+      assert.equal(sb.lockText(), "0,2100", `${what}: the GPU keeps the cap in force`);
+      assert.equal(sb.read(`run/${MARKER_FILE}`), `2100 ${boot}\n`, `${what}: the marker is still there`);
+      assert.equal(fs.existsSync(altMarker), false, `${what}: no second marker was written`);
+      assert.equal(sb.cronText(), cron, `${what}: the boot hook is untouched`);
+      assert.equal(sb.run(buildStatusProgram(paths), { env }).CAP, "2100", `${what}: the status reads the cap that is in force`);
+      assert.doesNotMatch(sb.calls(), /nvidia-smi -lgc 0,1800|crontab (-r|\/)/, what);
+    };
+    unchanged("before");
+
+    for (const persist of [false, true]) {
+      const res = sb.run(buildApplyProgram({ minMHz: 0, maxMHz: 1800, persist }, paths), { env });
+      assert.equal(res.CODE, "marker-failed", `persist=${persist}`);
+      assert.match(res.MSG, /cannot be removed by this user .* nothing was changed\. Remove it as root/);
+      unchanged(`apply persist=${persist}`);
+    }
+
+    // Once the marker is within reach, the new cap replaces it: the status reads what is in force.
+    fs.chmodSync(runDir, 0o755);
+    assert.equal(sb.run(buildApplyProgram({ minMHz: 0, maxMHz: 1800, persist: false }, paths), { env }).RESULT, "ok");
+    assert.equal(sb.lockText(), "0,1800");
+    assert.equal(sb.read(`run/${MARKER_FILE}`), null, "the root-written marker is gone");
+    assert.equal(fs.readFileSync(altMarker, "utf8"), `1800 ${boot}\n`);
+    assert.equal(sb.cronText(), "0 4 * * * /usr/local/bin/backup.sh\n", "the stale @reboot job is dropped");
+    assert.equal(sb.run(buildStatusProgram(paths), { env }).CAP, "1800");
+  } finally {
+    fs.chmodSync(runDir, 0o755);
+    sb.cleanup();
+  }
+});
+
 test("where only the narrow nvidia-smi rule is granted, keeping the cap installs an @reboot job", () => {
   const sb = sandbox({ narrowSudo: true, cron: true });
   try {

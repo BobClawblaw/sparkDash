@@ -14,6 +14,8 @@ config/showcase-history.json
 config/llm-daily.json
 config/llm-token-totals.json
 config/llm-token-totals.json.*
+config/model-prices.json
+config/model-prices.json.*
 config/fleet-energy.json
 config/fleet-energy-monthly.json*
 config/fleet-energy-monthly.unreadable-*
@@ -40,8 +42,6 @@ config/events.json
 config/llm-launchers.json
 config/tool-eval-runs.json
 config/tool-eval-results/
-config/vulnhunt-runs.json
-config/vulnhunt-results/
 config/gpu-history.json
 config/gpu-history-long.json
 config/metrics-history.json
@@ -49,5 +49,3 @@ config/metrics-history.json.corrupt-*
 config/fleet-energy.scope-*.json
 config/*.tmp
 config/*.json.*.tmp
-config/rea-runs.json
-config/rea-results/

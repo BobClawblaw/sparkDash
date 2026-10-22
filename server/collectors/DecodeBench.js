@@ -8,7 +8,8 @@
  * never response_format, grammars, or guided JSON.
  *
  * Structured protocol (matches glm-5.3-flash-sm120 tests/bench_decode.py):
- * count 1→200, temperature 0, top_p 1, thinking off, warmup 32 tokens,
+ * count 1→200, temperature 0.7 and thinking on by default (both selectable
+ * per run), top_p 1, warmup 32 tokens,
  * decode tok/s = (completion_tokens − 1) / (last − first token).
  * The same sampling protocol applies to every type.
  */
@@ -46,7 +47,11 @@ const HISTORY_PATH =
 const ACTIVE_PATH =
   process.env.BENCH_ACTIVE_PATH || path.join(ROOT, "config", "bench-active.json");
 
-/** Lab protocol: temperature 0; thinking off; top_p 1. Structured default. */
+/** Lab protocol: temperature 0.7, thinking on (both selectable per run); top_p 1. Structured default. */
+const DEFAULT_TEMPERATURE = 0.7;
+const MIN_TEMPERATURE = 0;
+const MAX_TEMPERATURE = 2;
+const DEFAULT_THINKING = true;
 
 const ALLOWED_CONCURRENCIES = new Set([1, 2, 3, 4, 5, 6, 8, 10, 12, 16, 24, 32]);
 const DEFAULT_MAX_TOKENS = 400;
@@ -104,17 +109,22 @@ function pickBenchPrompts(count, type) {
   return pickDecodeBenchPrompts(count, type);
 }
 
-function decodeRequestBody(modelId, prompt, maxTokens) {
+function decodeRequestBody(
+  modelId,
+  prompt,
+  maxTokens,
+  { temperature = DEFAULT_TEMPERATURE, thinking = DEFAULT_THINKING } = {}
+) {
   const body = {
     model: modelId || undefined,
     messages: [{ role: "user", content: prompt }],
     max_tokens: maxTokens,
-    temperature: 0,
+    temperature,
     top_p: 1,
     stream: true,
     stream_options: { include_usage: true },
   };
-  applyThinkingFlags(body, modelId, false);
+  applyThinkingFlags(body, modelId, thinking);
   return body;
 }
 
@@ -122,12 +132,21 @@ function decodeRequestBody(modelId, prompt, maxTokens) {
  * Short count stream so DFlash2 / Triton JIT is not billed on the first wave.
  * Best-effort: a warmup failure does not fail the job.
  */
-async function warmupDecode({ baseUrl, modelId, abortSignal, apiKey, debug = false, promptType = DECODE_BENCH_DEFAULT_TYPE }) {
+async function warmupDecode({
+  baseUrl,
+  modelId,
+  abortSignal,
+  apiKey,
+  debug = false,
+  promptType = DECODE_BENCH_DEFAULT_TYPE,
+  temperature = DEFAULT_TEMPERATURE,
+  thinking = DEFAULT_THINKING,
+}) {
   const url = `${baseUrl}/v1/chat/completions`;
   const kind = normalizeDecodeBenchType(promptType);
   const warmupPrompt =
     kind === "code" ? DECODE_CODE_WARMUP_PROMPT : decodeBenchPromptForType(kind);
-  const body = decodeRequestBody(modelId, warmupPrompt, WARMUP_MAX_TOKENS);
+  const body = decodeRequestBody(modelId, warmupPrompt, WARMUP_MAX_TOKENS, { temperature, thinking });
   const ctrl = new AbortController();
   const onParentAbort = () => ctrl.abort();
   if (abortSignal) {
@@ -139,7 +158,7 @@ async function warmupDecode({ baseUrl, modelId, abortSignal, apiKey, debug = fal
     await runStreamingRequest(url, body, ctrl.signal, {
       debug,
       retryOnThinking400: true,
-      thinking: false,
+      thinking,
       apiKey,
     });
   } catch {
@@ -297,6 +316,8 @@ export async function runConcurrencyWave({
   debug = false,
   apiKey = null,
   promptType = DECODE_BENCH_DEFAULT_TYPE,
+  temperature = DEFAULT_TEMPERATURE,
+  thinking = DEFAULT_THINKING,
   onLive = null,
 }) {
   const url = `${baseUrl}/v1/chat/completions`;
@@ -332,7 +353,7 @@ export async function runConcurrencyWave({
     }
 
     const body = {
-      ...decodeRequestBody(modelId, prompts[streamIndex], maxTokens),
+      ...decodeRequestBody(modelId, prompts[streamIndex], maxTokens, { temperature, thinking }),
       min_tokens: maxTokens,
       ignore_eos: true,
       stop: [],
@@ -341,7 +362,7 @@ export async function runConcurrencyWave({
     const streamOpts = {
       debug,
       retryOnThinking400: true,
-      thinking: false,
+      thinking,
       apiKey,
       onDelta: (d) => live.note(streamIndex, d?.tokenCount),
     };
@@ -753,6 +774,8 @@ export class DecodeBenchManager {
    *   concurrencies: number[],
    *   maxTokens?: number,
    *   promptType?: string,
+   *   temperature?: number,
+   *   thinking?: boolean,
    *   debug?: boolean,
    *   sampleHardware?: (() => Promise<object | null> | object | null) | null,
    *   apiKey?: string | null,
@@ -772,6 +795,8 @@ export class DecodeBenchManager {
       concurrencies: rawConc,
       maxTokens: rawMax,
       promptType: rawType,
+      temperature: rawTemp,
+      thinking: rawThinking,
       debug = false,
       sampleHardware = null,
       apiKey = null,
@@ -810,7 +835,21 @@ export class DecodeBenchManager {
       throw err;
     }
 
+    let temperature = rawTemp == null || rawTemp === "" ? DEFAULT_TEMPERATURE : Number(rawTemp);
+    if (!Number.isFinite(temperature) || temperature < MIN_TEMPERATURE || temperature > MAX_TEMPERATURE) {
+      const err = new Error(`temperature must be between ${MIN_TEMPERATURE} and ${MAX_TEMPERATURE}`);
+      err.status = 400;
+      throw err;
+    }
+    temperature = Math.round(temperature * 100) / 100;
     const promptType = normalizeDecodeBenchType(rawType);
+    // Only prose is selectable: structured/code/json need the format-bound answer inside the token budget.
+    const thinking =
+      promptType !== "prose"
+        ? false
+        : rawThinking == null
+          ? DEFAULT_THINKING
+          : rawThinking === true || rawThinking === "true";
     const debugOn = Boolean(debug);
     const benchId = randomUUID();
     const abort = new AbortController();
@@ -826,6 +865,8 @@ export class DecodeBenchManager {
         concurrencies,
         maxTokens,
         promptType,
+        temperature,
+        thinking,
         ...(debugOn ? { debug: true } : {}),
         ...(rawHost
           ? { host: String(rawHost).trim(), tls: Boolean(rawTls) }
@@ -908,6 +949,8 @@ export class DecodeBenchManager {
           apiKey: job._apiKey,
           debug,
           promptType: job.config.promptType,
+          temperature: job.config.temperature,
+          thinking: job.config.thinking,
         });
       }
       for (const c of job.config.concurrencies) {
@@ -934,6 +977,8 @@ export class DecodeBenchManager {
           debug,
           apiKey: job._apiKey,
           promptType: job.config.promptType,
+          temperature: job.config.temperature,
+          thinking: job.config.thinking,
           onLive: (tps) => {
             job.progress.liveTps = tps;
           },
@@ -1047,4 +1092,8 @@ export const DECODE_BENCH_DEFAULTS = {
   maxMaxTokens: MAX_MAX_TOKENS,
   promptTypes: [...DECODE_BENCH_TYPES],
   defaultPromptType: DECODE_BENCH_DEFAULT_TYPE,
+  defaultTemperature: DEFAULT_TEMPERATURE,
+  minTemperature: MIN_TEMPERATURE,
+  maxTemperature: MAX_TEMPERATURE,
+  defaultThinking: DEFAULT_THINKING,
 };

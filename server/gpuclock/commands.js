@@ -234,6 +234,18 @@ function header(paths) {
     // enough of a probe here — a narrow rule refuses `sh` but still allows `-lgc`.
     // With a typed password or plain `sudo` the same probe runs through $SUDO.
     'can_sudo_root() { [ -z "$SUDO" ] && return 0; $SUDO sh -c : >/dev/null 2>&1; }',
+    // Every recorded cap a change may have to clear must be clearable before
+    // anything changes: a marker left behind keeps the status reading a cap that
+    // is no longer in force. One written as root (in the root-owned run dir, while
+    // sudo still reached a root shell) is out of reach once sudo is narrowed to the
+    // nvidia-smi commands, so then the change is refused with everything as it was.
+    // $1 names the action for the message.
+    'can_rm() { [ -e "$1" ] || [ -L "$1" ] || return 0; RD=${1%/*}; RD=${RD:-/}; [ -w "$RD" ] && [ -x "$RD" ]; }',
+    'marker_preflight() {',
+    '  for F in "$MARKER" "$ALT_MARKER" "$ALT_FAIL"; do',
+    '    can_rm "$F" || can_sudo_root || fail marker-failed "the recorded cap ($F) cannot be removed by this user and sudo here cannot reach a root shell; nothing was changed. Remove it as root (sudo rm -f $F), then $1 again"',
+    '  done',
+    '}',
     // Keeping the cap without root: a @reboot line in the SSH user's own crontab,
     // offered only where cron is there to run it.
     `CRON_TAG="${CRON_TAG}"`,
@@ -373,9 +385,11 @@ export function buildApplyProgram({ minMHz, maxMHz, persist }, overrides = {}) {
     '  done',
     'fi',
     'if [ "$HOOK" = cron ] && [ -f "$UNIT" ]; then fail service-failed "a boot service this unit cannot remove without NOPASSWD: ALL is still installed and would re-apply its own cap at every boot; nothing was changed"; fi',
+    'marker_preflight "set the cap"',
     // Order matters: nothing existing is touched until the new cap has been accepted by nvidia-smi.
     'lgc() { $SUDO "$NV" -lgc "$MIN,$MAX"; }',
     'lgc_error() { printf "%s" "$1" | head -n 1 | tr -cd "A-Za-z0-9 .,:_()/-" | head -c 160; }',
+    'MARKER_ERR="could not record the cap"',
     'write_marker() {',
     '  B=$(bootid); [ -n "$B" ] || return 1',
     '  if can_sudo_root; then',
@@ -385,22 +399,28 @@ export function buildApplyProgram({ minMHz, maxMHz, persist }, overrides = {}) {
     '  [ -n "$HOMEDIR" ] || return 1',
     '  mkdir -p "$ALT_DIR" 2>/dev/null || return 1',
     '  printf "%s %s\\n" "$MAX" "$B" > "$ALT_MARKER" 2>/dev/null || return 1',
+    // The status reads root's marker first: one left from when sudo reached a root
+    // shell would hide the cap just recorded. marker_preflight made sure it can go.
+    '  [ "$MARKER" = "$ALT_MARKER" ] && return 0',
+    '  rm -f "$MARKER" 2>/dev/null && return 0',
+    '  MARKER_ERR="the cap is applied until the next reboot, but the older recorded cap ($MARKER) could not be removed, so the status may show it instead"',
+    '  return 1',
     '}',
     'OUT=$(lgc 2>&1) || fail lgc-failed "nvidia-smi refused the clock cap: $(lgc_error "$OUT")"',
     'if [ "$PERSIST" = 0 ]; then',
     // The cap is live and recorded first: if a stale hook then cannot be removed, the
     // status still reads the cap that is really in force, and the error says what is left.
-    '  write_marker || fail marker-failed "could not record the cap"',
+    '  write_marker || fail marker-failed "$MARKER_ERR"',
     // A stale hook of either kind would re-apply the old cap at the next boot.
     '  drop_cron || fail cron-failed "the cap is applied until the next reboot, but the existing @reboot job could not be removed and will re-apply its own cap at boot"',
     '  if [ -f "$UNIT" ]; then',
     // Stopping the old service resets clocks and deletes the marker, so restore both afterwards.
     '    drop_service || { lgc >/dev/null 2>&1; fail service-failed "the cap is applied until the next reboot, but the existing boot service could not be removed and will re-apply its own cap at boot"; }',
     '    OUT=$(lgc 2>&1) || fail lgc-failed "nvidia-smi refused the clock cap: $(lgc_error "$OUT")"',
-    '    write_marker || fail marker-failed "could not record the cap"',
+    '    write_marker || fail marker-failed "$MARKER_ERR"',
     "  fi",
     "else",
-    '  write_marker || fail marker-failed "could not record the cap"',
+    '  write_marker || fail marker-failed "$MARKER_ERR"',
     "  D=$(mktemp -d) || fail service-failed \"could not create a temporary directory\"",
     '  trap \'rm -rf "$D"\' EXIT',
     // Root: the oneshot unit sparkLimiter installs.
@@ -427,7 +447,7 @@ export function buildApplyProgram({ minMHz, maxMHz, persist }, overrides = {}) {
     `  $SUDO $SYSTEMCTL enable ${UNIT_NAME} >/dev/null 2>&1 || { rollback; fail service-failed "could not enable the service; the cap applies until the next reboot"; }`,
     `  $SUDO $SYSTEMCTL restart ${UNIT_NAME} >/dev/null 2>&1 || { rollback; fail service-failed "the service did not start; the cap applies until the next reboot"; }`,
     `  [ "$($SYSTEMCTL is-active ${UNIT_NAME} 2>/dev/null)" = active ] || { rollback; fail service-failed "the service is not active; the cap applies until the next reboot"; }`,
-    '  write_marker || fail marker-failed "could not record the cap"',
+    '  write_marker || fail marker-failed "$MARKER_ERR"',
     // A @reboot line left from when this unit had only the narrow rule would
     // race the service at boot with its own, older cap.
     '  drop_cron || fail cron-failed "the boot service is installed, but the old @reboot job could not be removed and would re-apply its own cap at boot"',
@@ -469,6 +489,8 @@ export function buildResetProgram(overrides = {}) {
     ...header(paths),
     '[ -n "$NV" ] || fail no-nvidia "nvidia-smi was not found on this unit"',
     needSudoLine(paths),
+    // A marker left behind after `-rgc` would keep the status reading a cap that is no longer in force.
+    'marker_preflight "reset"',
     'drop_cron || fail cron-failed "could not remove the existing @reboot job"',
     'drop_service || fail service-failed "could not remove the existing service"',
     '$SUDO "$NV" -rgc >/dev/null 2>&1 || fail rgc-failed "nvidia-smi could not reset the clocks"',

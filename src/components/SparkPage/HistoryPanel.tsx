@@ -414,7 +414,7 @@ export function HistoryPanel({
     ) : null;
 
   return (
-    <div ref={screenRef}>
+    <div ref={screenRef} className="sp-hist">
       <Panel title={`History · ${RANGE_TITLE[range]}`} icon={<ChartIcon />} actions={chips} bodyClassName="sp-stack sp-stack--tight">
         {stale}
         {body}

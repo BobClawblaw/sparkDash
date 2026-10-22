@@ -38,8 +38,6 @@ const SETTINGS: Settings = {
   showVramBreakdown: true,
   prometheusExport: false,
   intelVramSudo: false,
-  vulnhuntEnabled: false,
-  reaEnabled: false,
 };
 
 const READY: GpuClockStatus = {
@@ -125,6 +123,53 @@ describe("SettingsDialog fleet GPU clock and Save", () => {
     expect(setFleetGpuClock).toHaveBeenCalledTimes(2);
     expect(updateSettings).toHaveBeenCalledTimes(1);
     expect(onSaved).toHaveBeenCalledWith(SETTINGS);
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps Save open to retry when the read after a refused boot hook finds the cap already on", async () => {
+    const onClose = vi.fn();
+    const { container } = render(<SettingsDialog open onClose={onClose} onSaved={vi.fn()} />);
+    await settle();
+    const save = container.querySelector(".modal-sheet__footer .btn--primary") as HTMLButtonElement;
+
+    byText(container, "1800 MHz").click();
+    await settle();
+    // The cap lands everywhere but the boot hook is refused: the units now report 1800 MHz.
+    const refusal =
+      "keeping the cap after reboot needs passwordless sudo for the system service (NOPASSWD: ALL) or a running cron service for a @reboot job, and this unit offers neither";
+    vi.mocked(fetchGpuClock).mockResolvedValue({ ...READY, capMHz: 1800 });
+    vi.mocked(setFleetGpuClock).mockResolvedValue({
+      success: false,
+      applied: 0,
+      results: [
+        { id: "spark1", ok: false, error: refusal },
+        { id: "spark2", ok: false, error: refusal },
+      ],
+    });
+    save.click();
+    await settle();
+
+    expect(container.querySelector('[data-testid="fleet-now"]')!.textContent).toContain("Now: capped at 1800 MHz on 2 units");
+    expect(updateSettings).not.toHaveBeenCalled();
+    expect(onClose).not.toHaveBeenCalled();
+    // The matching read does not count as the Save having taken.
+    expect(save.disabled).toBe(false);
+
+    vi.mocked(setFleetGpuClock).mockResolvedValue({
+      success: true,
+      applied: 2,
+      results: [
+        { id: "spark1", ok: true, capMHz: 1800, persistKind: "unit" },
+        { id: "spark2", ok: true, capMHz: 1800, persistKind: "unit" },
+      ],
+    });
+    save.click();
+    await settle();
+
+    // The retry runs the cap again with the tick it was asked with, then saves.
+    expect(setFleetGpuClock).toHaveBeenCalledTimes(2);
+    expect(setFleetGpuClock).toHaveBeenLastCalledWith(1800, true);
+    expect(updateSettings).toHaveBeenCalledTimes(1);
     expect(onClose).toHaveBeenCalledTimes(1);
   });
 });

@@ -6,10 +6,10 @@ export const ENERGY_ID = "__energy__";
 export const TEMPS_ID = "__temps__";
 export const ACTIVITY_ID = "__activity__";
 export const SHOWCASE_ID = "__showcase__";
+/** Cost compare page: fleet token usage priced as a hosted API model. */
+export const COST_ID = "__cost__";
 /** Benchmark pages: the active id is this prefix + the benchmark type (decode, tool-eval, …). */
 export const BENCH_PREFIX = "__bench__:";
-/** Tool pages (REA, …): the active id is this prefix + the tool type. */
-export const TOOLS_PREFIX = "__tool__:";
 
 const FIXED_PATHS: Record<string, string> = {
   [OVERVIEW_ID]: "/",
@@ -18,6 +18,7 @@ const FIXED_PATHS: Record<string, string> = {
   [TEMPS_ID]: "/temps",
   [ACTIVITY_ID]: "/activity",
   [SHOWCASE_ID]: "/showcase",
+  [COST_ID]: "/cost",
 };
 
 export function benchId(type: string): string {
@@ -29,18 +30,9 @@ export function benchTypeOf(id: string | null | undefined): string | null {
   return id && id.startsWith(BENCH_PREFIX) ? id.slice(BENCH_PREFIX.length) : null;
 }
 
-export function toolId(type: string): string {
-  return `${TOOLS_PREFIX}${type}`;
-}
-
-/** Tool type when `id` is a tool page id, otherwise null. */
-export function toolTypeOf(id: string | null | undefined): string | null {
-  return id && id.startsWith(TOOLS_PREFIX) ? id.slice(TOOLS_PREFIX.length) : null;
-}
-
 /** True for every id that is a page rather than a Spark. */
 export function isPageId(id: string | null | undefined): boolean {
-  return Boolean(id) && (id! in FIXED_PATHS || id!.startsWith(BENCH_PREFIX) || id!.startsWith(TOOLS_PREFIX));
+  return Boolean(id) && (id! in FIXED_PATHS || id!.startsWith(BENCH_PREFIX));
 }
 
 /** URL path for an active id (a Spark id gets its detail page; null is the overview). */
@@ -49,8 +41,6 @@ export function idToPath(id: string | null): string {
   if (id in FIXED_PATHS) return FIXED_PATHS[id];
   const bench = benchTypeOf(id);
   if (bench) return `/bench/${encodeURIComponent(bench)}`;
-  const tool = toolTypeOf(id);
-  if (tool) return `/tools/${encodeURIComponent(tool)}`;
   return `/spark/${encodeURIComponent(id)}`;
 }
 
@@ -60,12 +50,8 @@ export function pathToId(pathname: string): string | null {
   for (const [id, p] of Object.entries(FIXED_PATHS)) {
     if (p !== "/" && (pathname === p || pathname === `${p}/`)) return id;
   }
-  // The page was briefly a top-level /security route; old links land on the benchmark page.
-  if (pathname === "/security" || pathname === "/security/") return benchId("vulnhunt");
   const bench = pathname.match(/^\/bench\/([a-z0-9-]+)\/?$/);
   if (bench) return benchId(bench[1]);
-  const tool = pathname.match(/^\/tools\/([a-z0-9-]+)\/?$/);
-  if (tool) return toolId(tool[1]);
   const spark = pathname.match(/^\/spark\/([^/]+)/);
   if (spark) return decodeURIComponent(spark[1]);
   return OVERVIEW_ID;

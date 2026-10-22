@@ -448,4 +448,105 @@ describe("FleetGpuClock", () => {
     expect(byText(container, "1800 MHz").className).toContain("is-current");
     expect(byText(container, "2400 MHz").className).not.toContain("is-current");
   });
+
+  it("keeps a failed Save pending, tick held, when the read after it finds the cap already on", async () => {
+    // The cap lands, the boot hook is refused: the units now report the picked cap.
+    const refusal =
+      "keeping the cap after reboot needs passwordless sudo for the system service (NOPASSWD: ALL) or a running cron service for a @reboot job, and this unit offers neither";
+    setApi.mockResolvedValue(done([
+      { id: "spark1", ok: false, error: refusal },
+      { id: "spark2", ok: false, error: refusal },
+    ]));
+    const ref = { current: null as FleetGpuClockApi | null };
+    const told: boolean[] = [];
+    const { container } = render(<FleetGpuClock apiRef={ref} onPendingChange={(p) => told.push(p)} />);
+    await settle();
+    const box = container.querySelector('input[type="checkbox"]') as HTMLInputElement;
+    expect(box.checked).toBe(true);
+
+    await click(byText(container, "1800 MHz"));
+    statusApi.mockResolvedValue(ready(1800, "none"));
+    expect(await applyPicked(ref)).toBe(false);
+    expect(setApi).toHaveBeenLastCalledWith(1800, true);
+
+    expect(container.querySelector('[data-testid="fleet-now"]')!.textContent).toContain("Now: capped at 1800 MHz on 2 units");
+    expect(status(container)!.className).toContain("is-err");
+    // Matching the fleet does not settle a Save that failed.
+    expect(ref.current!.pending()).toBe(true);
+    expect(told.at(-1)).toBe(true);
+    expect(container.textContent).toContain("Not applied yet");
+    // The retry still asks for what the user asked for, and the tick can still be cleared.
+    expect(box.checked).toBe(true);
+    expect(box.disabled).toBe(false);
+
+    setApi.mockResolvedValue(done([
+      { id: "spark1", ok: true, capMHz: 1800, persistKind: "unit" },
+      { id: "spark2", ok: true, capMHz: 1800, persistKind: "unit" },
+    ]));
+    expect(await applyPicked(ref)).toBe(true);
+    expect(setApi).toHaveBeenLastCalledWith(1800, true);
+    expect(ref.current!.pending()).toBe(false);
+    expect(told.at(-1)).toBe(false);
+  });
+
+  it("keeps an all-skipped Save pending when the read after it matches the pick", async () => {
+    setApi.mockResolvedValue(done([
+      { id: "spark1", ok: true, supported: false, reason: "nvidia-smi was not found on this unit" },
+      { id: "spark2", ok: true, supported: false, reason: "nvidia-smi was not found on this unit" },
+    ]));
+    const ref = { current: null as FleetGpuClockApi | null };
+    const { container } = render(<FleetGpuClock apiRef={ref} />);
+    await settle();
+
+    await click(byText(container, "1800 MHz"));
+    statusApi.mockResolvedValue(ready(1800));
+    expect(await applyPicked(ref)).toBe(false);
+    expect(ref.current!.pending()).toBe(true);
+  });
+
+  it("drops a failed Save's retry once another state is picked", async () => {
+    // Refused per unit, so the row reads the fleet again after it.
+    setApi.mockResolvedValue(done([
+      { id: "spark1", ok: false, error: "nvidia-smi -lgc failed" },
+      { id: "spark2", ok: false, error: "nvidia-smi -lgc failed" },
+    ]));
+    const ref = { current: null as FleetGpuClockApi | null };
+    const { container } = render(<FleetGpuClock apiRef={ref} />);
+    await settle();
+
+    await click(byText(container, "1800 MHz"));
+    statusApi.mockResolvedValue(ready(1800));
+    expect(await applyPicked(ref)).toBe(false);
+    expect(ref.current!.pending()).toBe(true);
+
+    // Picking the failed state again keeps its retry.
+    await click(byText(container, "1800 MHz"));
+    expect(ref.current!.pending()).toBe(true);
+
+    // Moving off it and back is a fresh pick: the fleet already reports it.
+    await click(byText(container, "1900 MHz"));
+    await click(byText(container, "1800 MHz"));
+    expect(ref.current!.pending()).toBe(false);
+  });
+
+  it("counts a unit without a GPU clock as read, not unreadable, and never asks a Mac", async () => {
+    listApi.mockResolvedValue({
+      sparks: [
+        { id: "spark1", kind: "spark" },
+        { id: "spark2", kind: "spark" },
+        { id: "studio", kind: "spark", platform: "darwin" },
+        { id: "win", kind: "spark", platform: "windows" },
+      ] as SparkConfig[],
+    });
+    statusApi.mockImplementation(async (id) =>
+      id === "spark2" ? { supported: false, reason: "nvidia-smi was not found on this unit" } : ready(2100),
+    );
+    const { container } = render(<FleetGpuClock />);
+    await settle();
+
+    const now = container.querySelector('[data-testid="fleet-now"]')!.textContent;
+    expect(now).toContain("Now: capped at 2100 MHz on 1 unit");
+    expect(now).not.toContain("unreadable");
+    expect(statusApi.mock.calls.map(([id]) => id).sort()).toEqual(["spark1", "spark2"]);
+  });
 });

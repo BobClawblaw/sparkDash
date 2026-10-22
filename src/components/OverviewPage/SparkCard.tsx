@@ -108,6 +108,15 @@ function SparkCardImpl({
   const ringColor = hot ? "var(--color-warning)" : "var(--color-accent)";
   const memColor = memPct >= 90 ? "var(--color-danger)" : memPct >= 85 ? "var(--color-warning)" : "var(--color-info)";
   const tempColor = tempRaw > 80 ? "var(--color-danger)" : tempRaw >= 75 ? "var(--color-warning)" : "var(--color-success)";
+  // A Spark's CPU runs much hotter than its GPU under the same load — on the GB10 the CPU
+  // is the number that hits high temps first, so it belongs next to the GPU bars at a glance
+  // instead of hiding behind a per-unit page visit.
+  const cpuMetrics = spark.metrics.cpu ?? null;
+  const cpuTempRaw = cpuMetrics && Number.isFinite(cpuMetrics.temperature) && cpuMetrics.temperature > 0 ? cpuMetrics.temperature : null;
+  const cpuTempVal = cpuTempRaw === null ? 0 : temperatureUnit === "fahrenheit" ? toF(cpuTempRaw) : cpuTempRaw;
+  const cpuTempColor = cpuTempRaw !== null && cpuTempRaw > 80 ? "var(--color-danger)" : cpuTempRaw !== null && cpuTempRaw >= 75 ? "var(--color-warning)" : "var(--color-success)";
+  const cpuPower = cpuMetrics && (cpuMetrics.draw > 0 || cpuMetrics.tdp > 0) ? { draw: cpuMetrics.draw, tdp: cpuMetrics.tdp } : null;
+  const cpuPowerPct = cpuPower && cpuPower.tdp > 0 ? (cpuPower.draw / cpuPower.tdp) * 100 : 0;
   const power = gpu?.power;
   const powerPct = power && power.limit > 0 ? (power.draw / power.limit) * 100 : 0;
 
@@ -174,13 +183,20 @@ function SparkCardImpl({
 
   const showTps = role !== "worker" && !!llm;
   const isStrata = llm?.backend === "strata";
+  // Engines that report requests (TensorFold, Strata, …) used to hide their parallelism behind
+  // "N running": a unit set to --parallel 4 and one set to 8 read the same. Name the capacity too.
+  const parallel = llm && llm.slotsTotal > 0 ? llm.slotsTotal : null;
   const llmChip = llm
     ? llm.requestsRunning != null
-      ? `${llm.requestsRunning} running · ${llm.requestsWaiting == null ? "queue unknown" : `${llm.requestsWaiting} queued`}`
+      ? `${llm.requestsRunning} running · ${llm.requestsWaiting == null ? "queue unknown" : `${llm.requestsWaiting} queued`}${
+          parallel != null ? ` · ${parallel} slots` : ""
+        }`
       : llm.slotsTotal > 0
         ? `${llm.slotsActive ?? "?"}/${llm.slotsTotal} slots`
         : null
     : null;
+  const llmChipTitle =
+    parallel != null && llm?.requestsRunning != null ? `${parallel} requests decode in parallel on this engine` : undefined;
 
   const chips = (
     <div className="ov-chips">
@@ -195,7 +211,7 @@ function SparkCardImpl({
           Cap {(throttle.clockCapMHz / 1000).toFixed(1)} GHz
         </Tag>
       ) : null}
-      {online && llmChip ? <Tag tone={(llm?.requestsRunning ?? llm?.slotsActive ?? 0) > 0 ? "good" : "neutral"}>{llmChip}</Tag> : null}
+      {online && llmChip ? <Tag tone={(llm?.requestsRunning ?? llm?.slotsActive ?? 0) > 0 ? "good" : "neutral"} title={llmChipTitle}>{llmChip}</Tag> : null}
       {comfy !== undefined || spark.comfyMonitoring ? (
         !comfy?.available ? (
           <Tag title="ComfyUI monitoring on — not reachable">Comfy</Tag>
@@ -292,6 +308,16 @@ function SparkCardImpl({
                 pct={gpu.metricAvailability?.powerDraw === false ? 0 : powerPct}
                 color="var(--color-violet)"
               />
+              {cpuTempRaw !== null ? (
+                <Bar
+                  label="CPU temp"
+                  title={cpuMetrics?.temperatureLabel ? `Sensor: ${cpuMetrics.temperatureLabel}` : undefined}
+                  caption={fmtTemp(cpuTempRaw)}
+                  pct={(cpuTempVal / tempMax) * 100}
+                  color={cpuTempColor}
+                />
+              ) : null}
+              {cpuPower ? <Bar label="CPU power" caption={`${cpuPower.draw} / ${cpuPower.tdp} W`} pct={cpuPowerPct} color="var(--color-violet)" /> : null}
             </div>
           </div>
           {showLauncher ? <ModelLauncher spark={spark} onOpen={onSelect} busy={loadingHint} /> : null}

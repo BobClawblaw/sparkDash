@@ -53,6 +53,7 @@ import {
 } from "./llmtokens/LlmTokenRuntime.js";
 import { closeLlmStreamAgent } from "./collectors/LlmStreaming.js";
 import { compareSemver, getLatestRelease } from "./collectors/HermesReleases.js";
+import { createModelPricesHandler } from "./prices/ModelPrices.js";
 import { ALERTS_JSON_PATH, FLEET_ENERGY_JSON_PATH, FLEET_ENERGY_MONTHLY_JSON_PATH, MAX_ACTIVE_BENCH_JOBS, METRICS_HISTORY_JSON_PATH } from "./config.js";
 import { createAlertsRuntime, registerAlertRoutes } from "./alerts/runtime.js";
 import { FleetEnergyTracker } from "./energy/FleetEnergyTracker.js";
@@ -64,13 +65,6 @@ import { LauncherManager } from "./llmlaunch/LauncherManager.js";
 import { ToolEvalStore } from "./tooleval/ToolEvalStore.js";
 import { ToolEvalManager } from "./tooleval/ToolEvalManager.js";
 import { registerToolEvalRoutes } from "./tooleval/routes.js";
-import { VulnHuntStore } from "./vulnhunt/VulnHuntStore.js";
-import { VulnHuntManager } from "./vulnhunt/VulnHuntManager.js";
-import { registerVulnHuntRoutes } from "./vulnhunt/routes.js";
-import { ReaStore } from "./rea/ReaStore.js";
-import { ReaManager } from "./rea/ReaManager.js";
-import { registerReaRoutes } from "./rea/routes.js";
-import { registerReaUploadRoutes } from "./rea/uploads.js";
 import { benchEvent } from "./events/eventFormat.js";
 import {
   createFleetEnergyRuntime,
@@ -397,39 +391,6 @@ const toolEvalManager = new ToolEvalManager({
 });
 const allowToolEval = createRateLimiter(30, 60_000);
 
-// ─── VulnHunter scans (vh + an agent harness on a unit) ──
-const vulnHuntStore = new VulnHuntStore({
-  file: process.env.VULNHUNT_RUNS_PATH || path.join(ROOT, "config", "vulnhunt-runs.json"),
-  resultsDir: process.env.VULNHUNT_RESULTS_DIR || path.join(ROOT, "config", "vulnhunt-results"),
-});
-const vulnHuntManager = new VulnHuntManager({
-  store: vulnHuntStore,
-  onEvent: (event) => recordEvent(event),
-});
-const allowVulnHunt = createRateLimiter(30, 60_000);
-
-// ─── REA (Tools): reverse engineering on a unit ──
-const reaStore = new ReaStore({
-  file: process.env.REA_RUNS_PATH || path.join(ROOT, "config", "rea-runs.json"),
-  resultsDir: process.env.REA_RESULTS_DIR || path.join(ROOT, "config", "rea-results"),
-});
-const reaManager = new ReaManager({
-  store: reaStore,
-  onEvent: (event) => recordEvent(event),
-});
-const allowRea = createRateLimiter(30, 60_000);
-const allowReaUpload = createRateLimiter(10, 60_000);
-// Uploads that were never used are removed from the unit after 24 h (best effort, hourly, only when REA is on).
-const reaUploadSweep = setInterval(() => {
-  if (getSettings().reaEnabled !== true) return;
-  for (const { id } of registry.sparks) {
-    const unit = registry.getSpark(id);
-    if (!unit?.online || (unit.platform && unit.platform !== "linux")) continue;
-    reaManager.sweepUploads(unit).catch(() => {});
-  }
-}, 60 * 60 * 1000);
-reaUploadSweep.unref();
-
 // ─── Monitor map ─────────────────────────────────────────
 const monitors = new Map();
 
@@ -512,19 +473,6 @@ const alertsRuntime = createAlertsRuntime({
 const app = express();
 const server = createServer(app);
 
-// REA uploads stream raw bytes, so they are mounted before the JSON body parser. They apply the same auth
-// middleware (host guard + token) per route; registering them without it throws at boot.
-const reaDeps = {
-  registry,
-  manager: reaManager,
-  store: reaStore,
-  allowRun: allowRea,
-  allowUpload: allowReaUpload,
-  principalKey,
-  rejectLimited,
-};
-registerReaUploadRoutes(app, { ...reaDeps, authMiddleware: createAuthMiddleware() });
-
 app.use(express.json());
 // Registered ahead of the auth middleware: a remote browser holding no token
 // (or a stale one) must still be able to learn that it needs one.
@@ -602,6 +550,7 @@ function clientKey(req) {
 // ─── REST API ────────────────────────────────────────────
 registerFleetEnergyRoute(app, fleetEnergyTracker);
 registerLlmTokenTotalsRoute(app, llmTokenLedger);
+app.get("/api/model-prices", createModelPricesHandler());
 registerAlertRoutes(app, alertsRuntime);
 
 // Never return SSH passwords in any response
@@ -756,8 +705,6 @@ app.delete("/api/sparks/:id", (req, res) => {
     launcherStatusCache.delete(req.params.id);
     unitHistory.remove(req.params.id);
     toolEvalManager.removeSpark(req.params.id);
-    vulnHuntManager.removeSpark(req.params.id);
-    reaManager.removeSpark(req.params.id);
     recordEvent({
       type: "spark.removed",
       severity: "info",
@@ -868,17 +815,6 @@ registerToolEvalRoutes(app, {
   manager: toolEvalManager,
   store: toolEvalStore,
   allowRun: allowToolEval,
-  principalKey,
-  rejectLimited,
-});
-
-registerReaRoutes(app, reaDeps);
-
-registerVulnHuntRoutes(app, {
-  registry,
-  manager: vulnHuntManager,
-  store: vulnHuntStore,
-  allowRun: allowVulnHunt,
   principalKey,
   rejectLimited,
 });
@@ -1487,6 +1423,8 @@ app.post("/api/sparks/:id/llm/bench", async (req, res) => {
       concurrencies: req.body?.concurrencies,
       maxTokens: req.body?.maxTokens,
       promptType: req.body?.promptType,
+      temperature: req.body?.temperature,
+      thinking: req.body?.thinking,
       debug: benchDebug,
       apiKey: target.apiKey,
       host: target.host,
@@ -2337,7 +2275,6 @@ wss.on("connection", (ws) => {
 
 // ─── Broadcast snapshot (dynamic interval) ────────────────
 let broadcastTimer = null;
-let _lastBroadcastPayload = null;
 
 /** Build the snapshot payload string. Centralized so broadcast + refresh share it. */
 function buildSnapshotPayload(sparks = orderedSnapshots()) {
@@ -2355,9 +2292,8 @@ function buildSnapshotPayload(sparks = orderedSnapshots()) {
 
 /**
  * Send a payload to every open WS client.
- * - Drops clients whose send queue is backlogged (>1 MB) to avoid unbounded
- *   buffering on slow/flaky connections (e.g. phone over spotty WiFi).
- * - Returns the payload so callers can compare against the previous broadcast.
+ * Drops clients whose send queue is backlogged (>1 MB) to avoid unbounded
+ * buffering on slow/flaky connections (e.g. phone over spotty WiFi).
  */
 function broadcastPayload(payload) {
   wss.clients.forEach((client) => {
@@ -2379,14 +2315,12 @@ function broadcastPayload(payload) {
 }
 
 /**
- * Force an immediate broadcast, ignoring the diff cache.
+ * Broadcast now instead of on the next tick.
  * Used after a user action (manual refresh / hermes check / update) so the
- * UI reflects the result right away instead of on the next poll tick.
+ * UI reflects the result right away.
  */
 function forceBroadcast() {
-  const payload = buildSnapshotPayload();
-  _lastBroadcastPayload = payload;
-  broadcastPayload(payload);
+  broadcastPayload(buildSnapshotPayload());
 }
 
 function startBroadcast() {
@@ -2394,14 +2328,15 @@ function startBroadcast() {
   broadcastTimer = setInterval(() => {
     const sparks = orderedSnapshots();
     // Alerts are evaluated once per fleet snapshot, before it goes out, so the
-    // payload carries the alerts this very snapshot produced.
+    // payload carries the alerts this very snapshot produced. They run whether
+    // or not a dashboard is open.
     alertsRuntime.tick(sparks);
-    const payload = buildSnapshotPayload(sparks);
-    // Skip the broadcast entirely when nothing changed since the last tick.
-    // A 1s poll that produces identical snapshots becomes free for idle tabs.
-    if (_lastBroadcastPayload !== null && payload === _lastBroadcastPayload) return;
-    _lastBroadcastPayload = payload;
-    broadcastPayload(payload);
+    // Nobody is listening: skip serialising every unit's snapshot. A client that
+    // connects later gets a fresh one from the connection handler.
+    if (wss.clients.size === 0) return;
+    // Send every tick even when nothing changed. The UI treats snapshot arrival
+    // as its liveness signal and shows "Telemetry is stale" without it.
+    broadcastPayload(buildSnapshotPayload(sparks));
   }, interval);
 }
 
@@ -2410,7 +2345,6 @@ function restartBroadcast() {
     clearInterval(broadcastTimer);
     broadcastTimer = null;
   }
-  _lastBroadcastPayload = null; // force a fresh broadcast on the new cadence
   startBroadcast();
 }
 
@@ -2429,6 +2363,17 @@ if (!startupPreflight.fatal) {
     learnTailscaleName();
     setInterval(learnTailscaleName, 10 * 60 * 1000).unref();
   }
+  // A failed listen (port in use, address not available) must end the process.
+  // The WebSocket server's own error handler only logs it, and the broadcast
+  // timer would keep a process alive that never serves a request.
+  server.on("error", (err) => {
+    if (server.listening) {
+      console.error("[sparkDash] server error:", err?.message);
+      return;
+    }
+    console.error(`[sparkDash] cannot listen on ${BIND_HOST}:${PORT}: ${err?.message}`);
+    process.exit(1);
+  });
   server.listen(PORT, BIND_HOST, () => {
     console.log(`[sparkDash] server listening on http://${BIND_HOST}:${PORT}`);
     console.log(`[sparkDash] WebSocket endpoint ws://${BIND_HOST}:${PORT}/ws`);
@@ -2470,8 +2415,6 @@ async function shutdown(signal) {
   try {
     launcherManager.shutdown();
     toolEvalManager.shutdown();
-    vulnHuntManager.shutdown();
-    reaManager.shutdown();
   } catch (err) {
     console.error("[sparkDash] failed to stop launcher watchers:", err.message);
   }

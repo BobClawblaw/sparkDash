@@ -18,9 +18,15 @@ const afterNull = (ms: number) => new Promise<null>((resolve) => window.setTimeo
 
 /** What the row hands the dialog: Save owns when a pick is applied. */
 export interface FleetGpuClockApi {
-  /** True while the picked state differs from what the fleet reports. */
+  /**
+   * True while a pick waits for Save: it differs from what the fleet reports, or
+   * the last Save of it did not take (a unit refused, every unit was skipped, the
+   * request failed). A later read that happens to match the pick does not settle
+   * a failed Save — the cap can land while its boot hook is refused — so it stays
+   * pending until a Save of it succeeds or another state is picked.
+   */
   pending(): boolean;
-  /** Apply the picked state. Resolves false when a unit refused, so Save can stay open. */
+  /** Apply the picked state. Resolves false unless at least one unit took it and none refused, so Save can stay open. */
   apply(): Promise<boolean>;
 }
 
@@ -55,6 +61,12 @@ export function FleetGpuClock({
   const [now, setNow] = useState<FleetNow | null>(null);
   /** The state the user picked. `undefined` = nothing picked, the fleet's own state stands. */
   const [picked, setPicked] = useState<number | null | undefined>(undefined);
+  /**
+   * The last Save of `picked` did not take everywhere. Kept apart from comparing
+   * the pick with the fleet: a cap can land while its boot hook is refused, and the
+   * read after it then matches the pick although the request failed.
+   */
+  const [unsettled, setUnsettled] = useState(false);
   const [persist, setPersist] = useState(false);
   /** null while nothing could be read: unknown is not the same as refused. */
   const [canPersist, setCanPersist] = useState<boolean | null>(null);
@@ -63,6 +75,9 @@ export function FleetGpuClock({
   const timer = useRef<number | undefined>(undefined);
   // Once the checkbox is touched, the fleet's own capability stops setting it.
   const persistTouched = useRef(false);
+  // A failed Save that asked to keep the cap holds the tick as asked: the read
+  // after it must not quietly turn the retry into a cap that ends at reboot.
+  const persistHeld = useRef(false);
   useEffect(() => () => window.clearTimeout(timer.current), []);
 
   const readUnit = useCallback(async (id: string) => {
@@ -91,7 +106,11 @@ export function FleetGpuClock({
         setNow({ kind: "unknown" });
         return;
       }
-      const ids = res.sparks.filter((spark) => spark.kind !== "host").map((spark) => spark.id);
+      // Only the units the cap route acts on are asked: hosts and macOS/Windows
+      // units have no clock to cap, so the route skips them before any read.
+      const ids = res.sparks
+        .filter((spark) => spark.kind !== "host" && spark.platform !== "darwin" && spark.platform !== "windows")
+        .map((spark) => spark.id);
       // Each unit gets its own deadline: one unreachable Spark must not hide what
       // the others report, and must not hold the row on "Reading the fleet…".
       const statuses = await Promise.all(ids.map(readUnit));
@@ -105,14 +124,16 @@ export function FleetGpuClock({
 
       const ready = statuses.filter((status): status is ReadyStatus => Boolean(status?.supported));
       const caps = ready.map((status) => status.capMHz);
-      const unreadable = ids.length - caps.length;
+      // Only a read that failed or timed out is unreadable; a unit that answered
+      // "no GPU clock here" (`supported: false`) was read, and simply has no cap.
+      const unreadable = statuses.filter((status) => !status).length;
       // "Keep after reboot" installs a boot hook: the systemd unit where sudo
       // reaches a root shell, an @reboot cron line where it does not. Offer it
       // only where this fleet can actually keep the cap; with nothing read, leave
       // the answer unknown rather than claiming the fleet refuses.
       const persistOk = ready.length > 0 && ready.every((status) => status.persistKind !== "none");
       setCanPersist(ready.length === 0 ? null : persistOk);
-      if (!persistTouched.current || !persistOk) setPersist(persistOk);
+      if (!persistHeld.current && (!persistTouched.current || !persistOk)) setPersist(persistOk);
       if (caps.length === 0) {
         setNow({ kind: "unknown" });
         return;
@@ -135,7 +156,8 @@ export function FleetGpuClock({
 
   const shared = now?.kind === "same" ? now.capMHz : undefined;
   // Any pick on a mixed or unreadable fleet is a change: it is asking to unify it.
-  const pending = picked !== undefined && (now?.kind !== "same" || picked !== shared);
+  // A pick whose last Save failed stays a change even where the fleet now matches it.
+  const pending = picked !== undefined && (unsettled || now?.kind !== "same" || picked !== shared);
 
   useEffect(() => {
     onPendingChange?.(pending);
@@ -197,14 +219,25 @@ export function FleetGpuClock({
         detail: detail || undefined,
       });
       // The pick is spent once every unit took it (skips are not failures) and at least one did.
-      if (failed.length === 0 && !nothingChanged) setPicked(undefined);
+      const took = failed.length === 0 && !nothingChanged;
+      if (took) {
+        setPicked(undefined);
+        setUnsettled(false);
+        persistHeld.current = false;
+      } else {
+        // Kept pending, with the tick it was sent with, until a Save of it takes.
+        setUnsettled(true);
+        if (persist && capMHz !== null) persistHeld.current = true;
+      }
       void read();
-      return failed.length === 0 && !nothingChanged;
+      return took;
     } catch (err: unknown) {
       setMsg({
         ok: false,
         text: err instanceof Error ? err.message : "GPU clock request failed",
       });
+      setUnsettled(true);
+      if (persist && capMHz !== null) persistHeld.current = true;
       return false;
     } finally {
       setBusy(false);
@@ -212,6 +245,15 @@ export function FleetGpuClock({
       timer.current = window.setTimeout(() => setMsg(null), 12_000);
     }
   }, [picked, persist, read]);
+
+  /** A new pick starts over; picking the failed state again keeps its retry. */
+  const pick = (state: number | null) => {
+    if (state !== picked) {
+      setUnsettled(false);
+      persistHeld.current = false;
+    }
+    setPicked(state);
+  };
 
   useEffect(() => {
     if (!apiRef) return;
@@ -248,7 +290,7 @@ export function FleetGpuClock({
           className={`btn btn--sm${shared === null ? " is-current" : ""}${
             picked === null ? " is-picked" : ""
           }`}
-          onClick={() => setPicked(null)}
+          onClick={() => pick(null)}
           disabled={busy}
         >
           Full capacity
@@ -258,7 +300,7 @@ export function FleetGpuClock({
             key={mhz}
             type="button"
             className={`btn btn--sm${shared === mhz ? " is-current" : ""}${picked === mhz ? " is-picked" : ""}`}
-            onClick={() => setPicked(mhz)}
+            onClick={() => pick(mhz)}
             disabled={busy}
           >
             {mhz} MHz
@@ -271,9 +313,11 @@ export function FleetGpuClock({
           checked={persist}
           onChange={(e) => {
             persistTouched.current = true;
+            persistHeld.current = false;
             setPersist(e.target.checked);
           }}
-          disabled={busy || canPersist === false}
+          // A tick held from a refused Save can still be cleared, to cap until reboot instead.
+          disabled={busy || (canPersist === false && !persist)}
         />
         Keep after reboot — the state you pick also installs a boot hook on each unit
       </label>
