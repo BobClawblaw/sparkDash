@@ -116,13 +116,6 @@ export function CostPage() {
 
   const price = useMemo(() => prices?.models.find((m) => m.id === modelId) ?? null, [prices, modelId]);
 
-  // No saved pick (or the catalog dropped it): fall back to the first model.
-  useEffect(() => {
-    if (!prices || price) return;
-    const fallback = prices.models[0]?.id;
-    if (fallback) selectModel(fallback);
-  }, [prices, price, selectModel]);
-
   const view = useMemo(() => {
     if (!usage || !price) return null;
     const { history, lifetime } = usage;
@@ -191,7 +184,7 @@ export function CostPage() {
             <h2 id="cp-pick-title" className="tk-card__title">
               Priced as
             </h2>
-            {price ? <PriceLine price={price} /> : <p className="tk-card__sub">Pick any model to price your usage against.</p>}
+            {price ? <PriceLine price={price} /> : <p className="tk-card__sub">Choose a hosted model to price your usage against.</p>}
           </div>
           <ModelPicker models={prices?.models ?? []} selectedId={price?.id ?? null} onSelect={selectModel} />
         </div>
@@ -290,6 +283,8 @@ export function CostPage() {
           <div className="panel tk-note" role="status">
             <b>No prices loaded.</b> The price catalog came back empty — retry in a moment.
           </div>
+        ) : prices ? (
+          <div className="panel tk-note" role="status">Choose a hosted model to compare costs.</div>
         ) : (
           <div className="panel tk-note" role="status">
             Loading prices…
@@ -305,7 +300,7 @@ export function CostPage() {
 }
 
 function PriceLine({ price }: { price: ModelPrice }) {
-  const ctx = [price.provider, price.maxInputTokens ? `${Math.round(price.maxInputTokens / 1000).toLocaleString()}k context` : null].filter(
+  const ctx = [price.provider, price.maxInputTokens ? `${Math.round(price.maxInputTokens / 1000).toLocaleString("en-US")}k context` : null].filter(
     Boolean
   );
   return (
@@ -420,7 +415,7 @@ function ModelPicker({
   return (
     <div className="cp-picker" ref={rootRef}>
       <button type="button" className="cp-toggle" onClick={() => setOpen((v) => !v)} aria-haspopup="listbox" aria-expanded={open}>
-        <span className="cp-toggle__id">{selected ? selected.id : "Pick a model…"}</span>
+        <span className="cp-toggle__id">{selected ? selected.id : "Choose a hosted model…"}</span>
         {selected ? <span className="cp-toggle__price">{priceLabel(selected)}</span> : null}
       </button>
       {open ? (
