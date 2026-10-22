@@ -104,3 +104,9 @@ describe("RocePanel", () => {
     expect(pfcLabel(device({ qos: null }))).toBeNull();
   });
 });
+
+it("explains netdev rate limits and cumulative pause totals", () => {
+  const { container } = render(<RocePanel roce={metrics([device()])} />);
+  expect(container.textContent).toContain("These netdev traffic rates do not measure RDMA payload throughput.");
+  expect(container.textContent).toContain("Pause frames are cumulative totals, separate from the current PFC setting.");
+});

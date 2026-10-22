@@ -1189,3 +1189,7 @@ Built for the **NVIDIA DGX Spark (GB10)** on ARM64.
 ### Cost compare without a price catalog
 
 On a fresh install, Cost compare shows **No price data yet** until a catalog is supplied. Catalog fetching is off by default: set `MODEL_PRICES_FETCH=1` and restart the server to opt in, or pre-seed `MODEL_PRICES_JSON_PATH` for offline use, then click **Retry**. A failed enabled fetch remains an error unless a cached catalog is available. Choose a hosted model explicitly to compare costs; the page does not infer a provider from local model names.
+
+### Interpreting RoCE traffic
+
+The RoCE panel shows netdev byte-counter rates, which do not measure RDMA payload throughput; a busy tensor-parallel link can therefore show little netdev traffic. Pause-frame counters are cumulative totals and are separate from the current PFC setting. RDMA error counters and their deltas remain available in the panel.
