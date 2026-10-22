@@ -9,6 +9,9 @@ Format: version sections are listed newest first.
 
 ## [Unreleased]
 
+### Changed
+- **History panel sits in the hardware column.** On wide screens the unit page's History panel (Settings → Metrics history) now closes the left column, right under GPU, memory, CPU and Models, instead of starting below both columns, which left a large empty area under the hardware panels whenever the right column (LLM, storage, network) was taller. Its charts follow the panel's own width: two per row from 560 px, three from 900 px. Below 1280 px, where the columns stack, it stays last.
+
 ---
 
 ## [2.70.0] — 2026-10-22
