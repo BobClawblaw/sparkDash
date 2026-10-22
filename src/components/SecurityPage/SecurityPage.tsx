@@ -6,28 +6,13 @@ import { Notice } from "./parts";
 import { ReportPanel } from "./ReportView";
 import { ScanForm } from "./ScanForm";
 import { SetupCard } from "./SetupCard";
-import { updateSettings } from "../../api/client";
 import { useVulnHuntReport, useVulnHuntRunner, useVulnHuntSetup, useVulnHuntStatus } from "./hooks";
 import { FALLBACK_LIMITS, isLive } from "./securityLogic";
 import "../../styles/security.css";
 
 /** Everything for one unit. Keyed by unit id, so switching units starts from a clean slate. */
 function Workspace({ spark }: { spark: SparkSnapshot }) {
-  const { setup, error: setupError, reload: reloadSetup } = useVulnHuntSetup();
-  const [enabling, setEnabling] = useState(false);
-  const [enableError, setEnableError] = useState<string | null>(null);
-  const enable = useCallback(async () => {
-    setEnabling(true);
-    setEnableError(null);
-    try {
-      await updateSettings({ vulnhuntEnabled: true });
-      reloadSetup();
-    } catch (e) {
-      setEnableError(e instanceof Error ? e.message : String(e));
-    } finally {
-      setEnabling(false);
-    }
-  }, [reloadSetup]);
+  const { setup, error: setupError } = useVulnHuntSetup();
   const status = useVulnHuntStatus(spark.id);
   const [viewedId, setViewedId] = useState<string | null>(null);
   const [reportVersion, setReportVersion] = useState(0);
@@ -68,23 +53,6 @@ function Workspace({ spark }: { spark: SparkSnapshot }) {
 
   return (
     <>
-      {setup && !setup.enabled ? (
-        <Notice
-          tone="warn"
-          title="VulnHunter is turned off"
-          actions={
-            <button type="button" className="btn btn--sm btn--primary" onClick={() => void enable()} disabled={enabling}>
-              {enabling ? "Turning on…" : "Turn on VulnHunter"}
-            </button>
-          }
-        >
-          VulnHunter runs an AI agent on your units, as their SSH user, against code you point it at, and the install step and the harness command put
-          things on the unit. It is opt-in and off by default. Once it is on, anyone who can reach this dashboard can use it, so set
-          SPARKDASH_TOKEN if others can. You can turn it off again in Settings.
-          {enableError ? ` ${enableError}` : ""}
-        </Notice>
-      ) : null}
-
       <SetupCard
         sparkId={spark.id}
         unitName={spark.name}

@@ -1,4 +1,4 @@
-import { getSettings } from "../settings.js";
+import { configuredToken, isLoopbackBind } from "../auth.js";
 import {
   displayLine,
   parseAllowedHosts,
@@ -32,24 +32,22 @@ export const SETUP = {
  *   GET  …/runs/:rid, …/stream, …/report             one scan, its live output, its parsed report
  *   POST …/runs/:rid/(attach|stop|refresh), DELETE …/runs/:rid, DELETE …/watch
  *
- * A scan clones a repository and lets an agent harness work on it, as the unit's user, and
- * installing VulnHunter or saving the harness command changes what runs there. Like Prometheus
- * export or the optional probes, the feature is an explicit opt-in (Settings -> VulnHunter, off by
- * default): until it is turned on, starting, installing and saving the command answer 403. It is
- * independent of SPARKDASH_TOKEN (set one if others can reach the dashboard: with the feature on,
- * whoever can reach the API can use it). The request carries an explicit authorization attestation
- * (kept on the run record with a time and the requester), the harness command is kept in a file the
- * unit's user owns and is write-only through the API (never read back or echoed), and
- * VULNHUNT_ALLOWED_HOSTS can pin the hosts a scan may clone from.
+ * A scan clones a repository and lets an agent harness work on it, as the unit's user, so
+ * unlike the read-only routes it is NOT offered on an open dashboard: starting one needs
+ * SPARKDASH_TOKEN, or a loopback bind. The request carries an explicit authorization
+ * attestation (kept on the run record with a time and the requester), the harness command is
+ * kept in a file the unit's user owns and is write-only through the API (never read back or echoed),
+ * installing and saving that command need the same gate, and VULNHUNT_ALLOWED_HOSTS can pin the
+ * hosts a scan may clone from.
  */
-export function registerVulnHuntRoutes(app, { registry, manager, store, allowRun, principalKey, rejectLimited, isEnabled = () => getSettings().vulnhuntEnabled === true }) {
+export function registerVulnHuntRoutes(app, { registry, manager, store, allowRun, principalKey, rejectLimited, bindHost = process.env.BIND_HOST || "127.0.0.1" }) {
   const base = "/api/sparks/:id/vulnhunt";
 
-  /** The opt-in: null when VulnHunter is turned on, otherwise why it is refused. */
+  /** Starting scans needs a token, or a dashboard only this machine can reach (which trusts its local users). */
   const startGate = () =>
-    isEnabled()
+    configuredToken() || isLoopbackBind(bindHost)
       ? null
-      : "VulnHunter is turned off. It runs an agent on your units, so it is opt-in: turn it on in Settings (or with the button on this page). Anyone who can reach this dashboard can then use it, so set SPARKDASH_TOKEN if others can.";
+      : "This dashboard has no server token and is reachable from the network, so anyone who can reach it could run an agent on your units. Set SPARKDASH_TOKEN in the host's .env and recreate the container (docker compose up -d --force-recreate), or bind to loopback. The Access token field in Settings only stores the token in this browser: it cannot set the server's.";
   const allowedHosts = () => parseAllowedHosts(process.env.VULNHUNT_ALLOWED_HOSTS);
 
   const sparkOr404 = (req, res) => {
@@ -85,7 +83,6 @@ export function registerVulnHuntRoutes(app, { registry, manager, store, allowRun
       hostCommandFile: HOST_CMD_FILE.replace("$HOME", "~"),
       limits: { defaultTimeoutMinutes: DEFAULT_TIMEOUT_MINUTES, minTimeoutMinutes: MIN_TIMEOUT_MINUTES, maxTimeoutMinutes: MAX_TIMEOUT_MINUTES },
       pinnedRev: VULNHUNTER_REV,
-      enabled: startGate() == null,
       startAllowed: startGate() == null,
       startBlockedReason: startGate(),
       allowedHosts: allowedHosts(),

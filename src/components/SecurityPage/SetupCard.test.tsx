@@ -19,7 +19,6 @@ const setupData = (over: Partial<VulnHuntSetup> = {}): VulnHuntSetup => ({
   hostCommandFile: "~/.config/sparkdash/vulnhunt-host-cmd",
   steps: ["git clone x"],
   limits: { defaultTimeoutMinutes: 240, minTimeoutMinutes: 5, maxTimeoutMinutes: 1440 },
-  enabled: true,
   startAllowed: true,
   startBlockedReason: null,
   allowedHosts: [],

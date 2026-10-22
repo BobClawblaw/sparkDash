@@ -19,11 +19,9 @@ async function freePort() {
   return port;
 }
 
-async function startServer(t, extraEnv = {}, { enabled = true } = {}) {
+async function startServer(t, extraEnv = {}) {
   const tmp = await mkdtemp(path.join(os.tmpdir(), "sparkdash-vh-"));
   fs.writeFileSync(path.join(tmp, "sparks.json"), "[]\n");
-  // VulnHunter is an opt-in setting; most tests run with it on, the opt-in test starts with it off.
-  fs.writeFileSync(isolatedConfigEnv(tmp).SETTINGS_JSON_PATH, JSON.stringify({ vulnhuntEnabled: enabled }));
   installFakeUnit(tmp);
   const port = await freePort();
   const child = spawn(process.execPath, ["server/index.js"], {
@@ -192,36 +190,30 @@ async function addLocalSpark(port, headers = {}) {
   assert.equal(created.status, 200);
 }
 
-test("VulnHunter over HTTP: it is an opt-in setting (off by default), not a token requirement; the pinned host list is enforced", async (t) => {
+test("VulnHunter over HTTP: starting a scan needs a token or a loopback bind, and the pinned host list is enforced", async (t) => {
   const body = JSON.stringify({ source: { type: "url", value: "https://example.com/org/repo" }, authorized: true });
 
-  // Off: starting, installing and saving the command are refused, on any bind, with no token needed to turn it on.
-  const off = await startServer(t, { BIND_HOST: "0.0.0.0" }, { enabled: false });
-  await addLocalSpark(off.port);
-  const setup = await api(off.port, "/api/vulnhunt/setup");
-  assert.equal(setup.body.enabled, false);
+  // Reachable from the network and no token: the dashboard is open, so scans are not offered.
+  const open = await startServer(t, { BIND_HOST: "0.0.0.0" });
+  await addLocalSpark(open.port);
+  const setup = await api(open.port, "/api/vulnhunt/setup");
   assert.equal(setup.body.startAllowed, false);
-  assert.match(setup.body.startBlockedReason, /turned off/);
-  const runs = (b) => api(off.port, "/api/sparks/alpha/vulnhunt/runs", { method: "POST", body: b ?? body });
-  assert.equal((await runs()).status, 403);
-  assert.equal((await api(off.port, "/api/sparks/alpha/vulnhunt/install", { method: "POST", body: JSON.stringify({ skillsDir: "~/s" }) })).status, 403);
-  assert.equal((await api(off.port, "/api/sparks/alpha/vulnhunt/host-command", { method: "PUT", body: JSON.stringify({ command: "fake-harness" }) })).status, 403);
-  assert.equal((await api(off.port, "/api/sparks/alpha/vulnhunt/runs")).body.runs.length, 0);
-  // Reading stays possible: status and history are harmless.
-  assert.equal((await api(off.port, "/api/sparks/alpha/vulnhunt/status")).status, 200);
+  assert.match(setup.body.startBlockedReason, /SPARKDASH_TOKEN/);
+  const refused = await api(open.port, "/api/sparks/alpha/vulnhunt/runs", { method: "POST", body });
+  assert.equal(refused.status, 403);
+  assert.match(refused.body.error, /SPARKDASH_TOKEN/);
+  assert.equal((await api(open.port, "/api/sparks/alpha/vulnhunt/runs")).body.runs.length, 0);
 
-  // Opt in through the settings API (no server token involved) and it works on the same open bind.
-  const on = await api(off.port, "/api/settings", { method: "PUT", body: JSON.stringify({ vulnhuntEnabled: true }) });
-  assert.equal(on.status, 200);
-  assert.equal(on.body.vulnhuntEnabled, true);
-  assert.equal((await api(off.port, "/api/vulnhunt/setup")).body.startAllowed, true);
-  const started = await runs();
-  assert.equal(started.status, 202);
-  await settleScan(off.port, started.body.run.id);
-
-  // Off again: refused again.
-  await api(off.port, "/api/settings", { method: "PUT", body: JSON.stringify({ vulnhuntEnabled: false }) });
-  assert.equal((await runs()).status, 403);
+  // Same bind with a token: allowed for a caller that has it.
+  const token = "t0ken-for-tests";
+  const guarded = await startServer(t, { BIND_HOST: "0.0.0.0", SPARKDASH_TOKEN: token });
+  const auth = { Authorization: `Bearer ${token}` };
+  await addLocalSpark(guarded.port, auth);
+  assert.equal((await api(guarded.port, "/api/sparks/alpha/vulnhunt/runs", { method: "POST", body })).status, 401);
+  const ok = await api(guarded.port, "/api/sparks/alpha/vulnhunt/runs", { method: "POST", body, headers: auth });
+  assert.equal(ok.status, 202);
+  assert.equal((await api(guarded.port, "/api/vulnhunt/setup", { headers: auth })).body.startAllowed, true);
+  await settleScan(guarded.port, ok.body.run.id, auth);
 
   // A pinned host list.
   const pinned = await startServer(t, { VULNHUNT_ALLOWED_HOSTS: "git.example.org, *.corp.example" });
@@ -279,8 +271,8 @@ test("VulnHunter over HTTP: deleting a running scan needs force, and a forced de
 });
 
 test("VulnHunter over HTTP: install and harness-command endpoints are gated, validated and never echo the command", async (t) => {
-  // Not opted in: refused like starting a scan.
-  const open = await startServer(t, { BIND_HOST: "0.0.0.0" }, { enabled: false });
+  // Open network bind, no token: refused like starting a scan.
+  const open = await startServer(t, { BIND_HOST: "0.0.0.0" });
   await addLocalSpark(open.port);
   const post = (port, p, body, headers) => api(port, p, { method: "POST", body: JSON.stringify(body), headers });
   assert.equal((await post(open.port, "/api/sparks/alpha/vulnhunt/install", { skillsDir: "~/.claude/skills" })).status, 403);

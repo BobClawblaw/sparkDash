@@ -54,22 +54,25 @@ export function mergeLines(prev: VulnHuntLine[], next: VulnHuntLine[], max = MAX
 
 // ── setup text (static) and the unit's readiness ──
 
+let setupPromise: Promise<VulnHuntSetup> | null = null;
+
 export function useVulnHuntSetup() {
   const [setup, setSetup] = useState<VulnHuntSetup | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [version, setVersion] = useState(0);
   useEffect(() => {
     let off = false;
-    fetchVulnHuntSetup()
+    setupPromise ??= fetchVulnHuntSetup();
+    setupPromise
       .then((s) => !off && (setSetup(s), setError(null)))
-      .catch((e) => !off && setError(msg(e)));
+      .catch((e) => {
+        setupPromise = null;
+        if (!off) setError(msg(e));
+      });
     return () => {
       off = true;
     };
-  }, [version]);
-  /** Ask again (after the opt-in was turned on, for example). */
-  const reload = useCallback(() => setVersion((v) => v + 1), []);
-  return { setup, error, reload };
+  }, []);
+  return { setup, error };
 }
 
 export function useVulnHuntStatus(sparkId: string) {

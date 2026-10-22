@@ -920,8 +920,6 @@ export interface Settings {
   prometheusExport: boolean;
   /** Let the Intel (xe) probe read debugfs VRAM through sudo -n. Off by default. */
   intelVramSudo: boolean;
-  /** VulnHunter scans, installs and harness-command changes are opt-in (off by default). */
-  vulnhuntEnabled: boolean;
   /**
    * Keep 48 h / 30 days of per-unit history on the server and chart it in a History
    * panel on the unit page. Off by default.
@@ -1840,9 +1838,7 @@ export interface VulnHuntSetup {
   hostCommandFile: string;
   steps: string[];
   limits: { defaultTimeoutMinutes: number; minTimeoutMinutes: number; maxTimeoutMinutes: number };
-  /** The VulnHunter opt-in setting (Settings); off by default. */
-  enabled: boolean;
-  /** Same as `enabled`: scans, installs and harness-command changes are refused until it is on. */
+  /** False on an open dashboard (no SPARKDASH_TOKEN and not loopback): scans cannot be started. */
   startAllowed: boolean;
   startBlockedReason: string | null;
   /** VULNHUNT_ALLOWED_HOSTS: when not empty, scans may only clone from these hosts. */
