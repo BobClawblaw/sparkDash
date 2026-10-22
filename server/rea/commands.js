@@ -42,36 +42,6 @@ export const NODE_PIN_SHA256 = Object.freeze({
   x64: "1084aa36196bba4c3a5e69a1ee388a6e4ff729dad09445fbcd434b28fe3c24af",
 });
 export const NODE_INSTALL_ROOT = "$HOME/.local/share/sparkdash/node";
-
-/**
- * Ghidra and the JDK it needs, installed on request (never as part of the REA install). REA's bridge is
- * verified against Ghidra 12.1.4 and needs a 64-bit full JDK 21+. Both archives are verified against
- * SHA-256 values pinned here: Ghidra's from the GitHub release asset digest, Temurin's from the Adoptium
- * API (https://api.adoptium.net/v3/assets/latest/21/hotspot), both checked on 2026-10-12.
- * The release ships no aarch64 Linux decompiler, so on such a unit it is built from the bundled sources.
- */
-export const GHIDRA_VERSION = "12.1.4";
-export const GHIDRA_URL = `https://github.com/NationalSecurityAgency/ghidra/releases/download/Ghidra_${GHIDRA_VERSION}_build/ghidra_${GHIDRA_VERSION}_PUBLIC_20260921.zip`;
-export const GHIDRA_SHA256 = "ddac49f903da9d5bac833e5cc79395098b9c33cfd3279be5f31bd00387d2d4db";
-export const GHIDRA_BYTES = 569649598;
-export const JDK_VERSION = "21.0.12.1+1";
-export const JDK_PIN = Object.freeze({
-  aarch64: {
-    url: "https://github.com/adoptium/temurin21-binaries/releases/download/jdk-21.0.12.1%2B1/OpenJDK21U-jdk_aarch64_linux_hotspot_21.0.12.1_1.tar.gz",
-    sha256: "23e37e026f12f3e706f18938ff611db3032d075b09d0879a25d06718c773e223",
-    bytes: 205641175,
-  },
-  x64: {
-    url: "https://github.com/adoptium/temurin21-binaries/releases/download/jdk-21.0.12.1%2B1/OpenJDK21U-jdk_x64_linux_hotspot_21.0.12.1_1.tar.gz",
-    sha256: "ce79869e1307ed8ee1e2baa86a412b1eb5b75d10a01006d788a6f968bcfaee94",
-    bytes: 207473347,
-  },
-});
-export const GHIDRA_ROOT = "$HOME/.local/share/sparkdash/ghidra";
-export const JDK_ROOT = "$HOME/.local/share/sparkdash/jdk";
-export const GHIDRA_RECORD = "$HOME/.config/sparkdash/ghidra-install";
-/** Free space the install needs in the unit user's home (archives + extracted Ghidra + JDK + build). */
-export const GHIDRA_MIN_FREE_KIB = 4 * 1024 * 1024;
 export const INSTALL_ROOT = "$HOME/.local/share/sparkdash/rea";
 export const RUN_ROOT = "$HOME/.cache/sparkdash/rea/runs";
 export const UPLOAD_ROOT = "$HOME/.cache/sparkdash/rea/uploads";
@@ -211,26 +181,6 @@ find_node() {
 }
 `;
 
-/**
- * The Ghidra and JDK sparkDash installed (record written by buildGhidraInstallProgram). Exports what REA reads
- * to find them, unless the unit user's own environment already points REA at a Ghidra: then nothing is touched.
- * The record is read as data (sed), never sourced.
- */
-const ENGINE_ENV = `
-engine_env() {
-  local rec="${GHIDRA_RECORD}" gd jh
-  [ -f "$rec" ] || return 0
-  [ -z "\${GHIDRA_INSTALL_DIR:-}" ] || return 0
-  gd=$(sed -n 's/^GHIDRA_INSTALL_DIR=//p' "$rec" | head -n 1)
-  jh=$(sed -n 's/^JAVA_HOME=//p' "$rec" | head -n 1)
-  case "$gd" in /*) ;; *) return 0;; esac
-  [ -x "$gd/support/analyzeHeadless" ] || return 0
-  export GHIDRA_INSTALL_DIR="$gd"
-  case "$jh" in /*) [ -x "$jh/bin/java" ] && { export JAVA_HOME="$jh"; export PATH="$jh/bin:$PATH"; };; esac
-  return 0
-}
-`;
-
 // ── run ─────────────────────────────────────────────────────────────────────
 
 /**
@@ -276,8 +226,6 @@ wrapper_alive() { kill -0 "$INNER" 2>/dev/null && tr '\\0' ' ' 2>/dev/null < "/p
 ) &
 
 export NO_COLOR=1
-${ENGINE_ENV}
-engine_env
 echo "[sparkdash] stage: rea $1"
 # rea runs in the background of THIS session so that a stop request and the time limit both reach it
 # and everything it started. Its stdout goes through a size cap into result.json; its stderr is the log.
@@ -617,47 +565,6 @@ fs.writeFileSync(process.env.OUT, text, { mode: 0o600 });
 // ── status ──────────────────────────────────────────────────────────────────
 
 /**
- * GHIDRA_* lines of the status program: what is installed (from GHIDRA_INSTALL_DIR, which engine_env may have set),
- * whether the native decompiler exists for this CPU, which Java it would use, and whether the installer can run here.
- */
-const GHIDRA_STATUS = `
-case "$(uname -m)" in aarch64|arm64) GNATIVE=linux_arm_64; GJ=aarch64;; x86_64|amd64) GNATIVE=linux_x86_64; GJ=x64;; *) GNATIVE=""; GJ="";; esac
-GD="\${GHIDRA_INSTALL_DIR:-}"
-[ -n "$GD" ] || { GD=$(command -v analyzeHeadless 2>/dev/null || true); [ -z "$GD" ] || GD=$(dirname "$(dirname "$(readlink -f "$GD")")"); }
-GV=""; GN=0
-if [ -n "$GD" ] && [ -f "$GD/Ghidra/application.properties" ]; then
-  GV=$(sed -n 's/^application.version=//p' "$GD/Ghidra/application.properties" | head -n 1 | tr -cd '0-9A-Za-z.+-' | head -c 40)
-  [ -z "$GNATIVE" ] || [ ! -x "$GD/Ghidra/Features/Decompiler/os/$GNATIVE/decompile" ] || GN=1
-fi
-echo "GHIDRA_ARCH=$(uname -m | clean)"
-echo "GHIDRA_DIR=$(printf %s "$GD" | clean)"
-echo "GHIDRA_VERSION=$GV"
-echo "GHIDRA_NATIVE=$GN"
-JH="\${JAVA_HOME:-}"
-JBIN=""
-if [ -n "$JH" ] && [ -x "$JH/bin/java" ]; then JBIN="$JH/bin/java"; else JBIN=$(command -v java 2>/dev/null || true); fi
-JM=""
-if [ -n "$JBIN" ]; then
-  JO=$(timeout 20 "$JBIN" -version 2>&1 | head -n 3)
-  JM=$(printf %s "$JO" | awk -F'"' 'NR==1{split($2,a,"."); print a[1]}' | tr -cd '0-9' | head -c 4)
-  printf %s "$JO" | grep -q '64-Bit' || JM=""
-  [ -x "$(dirname "$JBIN")/javac" ] || JM=""
-fi
-echo "GHIDRA_JAVA=$JM"
-if [ -f "${GHIDRA_RECORD}" ]; then echo "GHIDRA_MANAGED=1"; else echo "GHIDRA_MANAGED=0"; fi
-echo "GHIDRA_PIN=${GHIDRA_VERSION}"
-GREASON=""
-[ "$(uname -s)" = Linux ] || GREASON="the unit is not Linux"
-[ -n "$GREASON" ] || [ -n "$GJ" ] || GREASON="no Ghidra / JDK build for $(uname -m)"
-[ -n "$GREASON" ] || { command -v tar >/dev/null 2>&1 && command -v sha256sum >/dev/null 2>&1; } || GREASON="tar and sha256sum are needed"
-[ -n "$GREASON" ] || command -v curl >/dev/null 2>&1 || command -v wget >/dev/null 2>&1 || command -v python3 >/dev/null 2>&1 || GREASON="none of curl, wget or python3 is available to download it"
-[ -n "$GREASON" ] || command -v unzip >/dev/null 2>&1 || command -v python3 >/dev/null 2>&1 || GREASON="neither unzip nor python3 is available to unpack it"
-[ -n "$GREASON" ] || [ "$GJ" = x64 ] || { command -v g++ >/dev/null 2>&1 && command -v make >/dev/null 2>&1; } || GREASON="g++ and make are needed to build Ghidra's decompiler for this CPU (Ubuntu/Debian: sudo apt install build-essential)"
-if [ -z "$GREASON" ]; then echo "GHIDRA_INSTALLABLE=1"; else echo "GHIDRA_INSTALLABLE=0"; echo "GHIDRA_INSTALL_REASON=$GREASON"; fi
-echo "GHIDRA_FREE_KIB=$(df -Pk "$HOME" 2>/dev/null | awk 'NR==2{print $4}' | head -c 20)"
-`;
-
-/**
  * What the unit can do today: key=value lines. DOCTOR_B64 / PROVIDERS_B64 carry the (bounded: 60 s,
  * 256 KiB) JSON reports base64-encoded on one line so report text can never be mistaken for a key.
  * ENGINE_<id>=<path or empty> for the engines rea can use. Only paths and versions are printed.
@@ -666,8 +573,6 @@ export function buildStatusProgram({ deep = true } = {}) {
   return wrap(`
 ${PATH_LINE}
 ${NODE_OK}
-${ENGINE_ENV}
-engine_env
 clean() { tr -d '\\n\\r' | tr -cd '[:print:]' | head -c 400; }
 find_node
 NODEP="$NODE_BIN"
@@ -717,7 +622,6 @@ engine() {
 P=""
 if [ -n "\${GHIDRA_INSTALL_DIR:-}" ] && [ -x "$GHIDRA_INSTALL_DIR/support/analyzeHeadless" ]; then P="$GHIDRA_INSTALL_DIR/support/analyzeHeadless"; else P=$(command -v analyzeHeadless 2>/dev/null || true); fi
 engine ghidra "$P"
-${GHIDRA_STATUS}
 P=""
 if [ -n "\${HOPPER_LAUNCHER_PATH:-}" ] && [ -x "$HOPPER_LAUNCHER_PATH" ]; then P="$HOPPER_LAUNCHER_PATH"; else P=$(command -v Hopper 2>/dev/null || true); fi
 engine hopper "$P"
@@ -867,277 +771,6 @@ REC="${INSTALL_RECORD}"
 mkdir -p "$(dirname "$REC")" || fail "Could not create the config directory." 1
 { printf 'VERSION=%s\\n' "$VER"; printf 'NODE=%s\\n' "$NV"; printf 'NODE_BIN=%s\\n' "$NODE_BIN"; printf 'DATE=%s\\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"; } > "$REC.$$" && chmod 600 "$REC.$$" && mv -f -- "$REC.$$" "$REC"
 step "installed: ${LAUNCHER} -> $FINAL"
-echo "${TX}0"
-`);
-}
-
-// ── Ghidra install ──────────────────────────────────────────────────────────
-
-/**
- * Install Ghidra (the pinned release) and, when the unit has no JDK 21+, a pinned Temurin 21, both into the
- * user's home; no root, no package manager. On aarch64 the release has no native decompiler, so it is built
- * from the sources the release carries (needs g++ and make). Finishes with a headless import as the smoke
- * test, then writes ~/.config/sparkdash/ghidra-install, which the run and status programs read to point
- * REA at it. Idempotent: a complete install is only re-verified.
- * Exit codes: 0 ok, 1 filesystem, 3 download failed, 4 checksum / smoke test failed, 5 unsupported unit,
- * missing tools or too little disk, 6 unpack / build failed.
- */
-export function buildGhidraInstallProgram({ nonce = "" } = {}) {
-  const TX = exitToken(nonce);
-  const A = JDK_PIN.aarch64;
-  const X = JDK_PIN.x64;
-  return wrap(`
-umask 022
-${PATH_LINE}
-fail() { echo "[sparkdash] $1"; echo "${TX}$2"; exit 0; }
-step() { echo "[sparkdash] $1"; }
-warn() { echo "[sparkdash] note: $1"; }
-TMPS=""
-BG=""
-cleanup() {
-  [ -z "$BG" ] || kill "$BG" 2>/dev/null
-  local d; for d in $TMPS; do [ -z "$d" ] || rm -rf -- "$d"; done
-}
-trap cleanup EXIT
-trap 'exit 1' TERM INT
-
-[ "$(uname -s)" = Linux ] || fail "The Ghidra installer only supports Linux units." 5
-case "$(uname -m)" in
-  aarch64|arm64) JARCH=aarch64; NATIVE=linux_arm_64; JURL="${A.url}"; JSHA="${A.sha256}"; JBYTES=${A.bytes};;
-  x86_64|amd64) JARCH=x64; NATIVE=linux_x86_64; JURL="${X.url}"; JSHA="${X.sha256}"; JBYTES=${X.bytes};;
-  *) fail "There is no Ghidra / JDK build for $(uname -m)." 5;;
-esac
-command -v tar >/dev/null 2>&1 && command -v sha256sum >/dev/null 2>&1 || fail "tar and sha256sum are needed." 5
-if command -v curl >/dev/null 2>&1; then DL=curl; elif command -v wget >/dev/null 2>&1; then DL=wget; elif command -v python3 >/dev/null 2>&1; then DL=python3; else fail "None of curl, wget or python3 is available to download files." 5; fi
-if command -v unzip >/dev/null 2>&1; then UZ=unzip; elif command -v python3 >/dev/null 2>&1; then UZ=python3; else fail "Neither unzip nor python3 is available to unpack Ghidra." 5; fi
-
-GROOT="${GHIDRA_ROOT}"
-JROOT="${JDK_ROOT}"
-GVER="${GHIDRA_VERSION}"
-GFINAL="$GROOT/$GVER"
-REC="${GHIDRA_RECORD}"
-mkdir -p "$GROOT" "$JROOT" || fail "Could not create the install directories under ~/.local/share/sparkdash." 1
-
-# Free space: archives + extracted tree + JDK + the decompiler build.
-FREE=$(df -Pk "$GROOT" 2>/dev/null | awk 'NR==2{print $4}')
-case "$FREE" in ''|*[!0-9]*) FREE=0;; esac
-if [ "$FREE" -gt 0 ] && [ "$FREE" -lt ${GHIDRA_MIN_FREE_KIB} ]; then
-  fail "Only $((FREE / 1024)) MiB are free in the home directory; installing Ghidra needs about $((${GHIDRA_MIN_FREE_KIB} / 1024)) MiB." 5
-fi
-
-# fetch <url> <dest> <expected bytes> <label>: download with a progress line every ~10 s.
-fetch() {
-  local url="$1" dest="$2" total="$3" label="$4" pid have last=-1
-  step "downloading $label ($((total / 1048576)) MiB) from $url"
-  case "$DL" in
-    curl) curl -fsSL --connect-timeout 30 --max-time 3000 --retry 3 --retry-delay 5 -o "$dest" "$url" & ;;
-    wget) wget -q -T 60 -t 3 -O "$dest" "$url" & ;;
-    python3) python3 -I -c 'import sys, urllib.request; urllib.request.urlretrieve(sys.argv[1], sys.argv[2])' "$url" "$dest" & ;;
-  esac
-  pid=$!; BG=$pid
-  local tick=0
-  while kill -0 "$pid" 2>/dev/null; do
-    sleep 1
-    tick=$((tick + 1))
-    [ $((tick % 10)) -eq 0 ] || continue
-    have=$(stat -c %s "$dest" 2>/dev/null || echo 0)
-    [ $((have / 52428800)) -gt "$last" ] && { last=$((have / 52428800)); step "  $((have / 1048576)) of $((total / 1048576)) MiB"; }
-  done
-  wait "$pid"; local rc=$?
-  BG=""
-  return "$rc"
-}
-
-# The release has no aarch64 Linux decompiler: fail before downloading anything when it cannot be built here.
-check_build_tools() {
-  command -v g++ >/dev/null 2>&1 && command -v make >/dev/null 2>&1 || fail "g++ and make are needed to build Ghidra's decompiler for this CPU (the release ships none for aarch64). Install them (Ubuntu/Debian: sudo apt install build-essential), then run the install again." 5
-  # sleigh links with -lz, which needs zlib's development files, not just the runtime library.
-  printf 'int main(){return 0;}\n' | g++ -x c++ - -lz -o /dev/null >/dev/null 2>&1 || fail "zlib's development files are needed to build Ghidra's decompiler. Install them (Ubuntu/Debian: sudo apt install zlib1g-dev), then run the install again." 5
-}
-if [ ! -x "$GFINAL/Ghidra/Features/Decompiler/os/$NATIVE/decompile" ] && [ "$JARCH" = aarch64 ]; then
-  check_build_tools
-fi
-
-# ── JDK 21+ ─────────────────────────────────────────────────────────────────
-# A full (javac present), 64-bit JDK of major 21 or newer: the unit's own, else a Temurin build in the user's home.
-jdk_major() {
-  local o
-  [ -x "$1/bin/java" ] && [ -x "$1/bin/javac" ] || return 0
-  o=$(timeout 20 "$1/bin/java" -version 2>&1 | head -n 3)
-  printf %s "$o" | grep -q '64-Bit' || return 0
-  printf %s "$o" | awk -F'"' 'NR==1{split($2,a,"."); print a[1]}' | tr -cd '0-9' | head -c 4
-}
-find_jdk() {
-  local h m best="" bestm=0 jb
-  jb=$(command -v java 2>/dev/null); [ -z "$jb" ] || jb=$(dirname "$(dirname "$(readlink -f "$jb")")")
-  # System JDK directories are overridable (SPARKDASH_REA_JDK_DIRS, colon separated) so tests are hermetic.
-  local sysj="" d IFS_OLD="$IFS"
-  IFS=:
-  for d in \${SPARKDASH_REA_JDK_DIRS-/usr/lib/jvm}; do [ -z "$d" ] || sysj="$sysj $d/*"; done
-  IFS="$IFS_OLD"
-  for h in "\${JAVA_HOME:-}" "$jb" "$JROOT"/*/ $sysj "$HOME"/.sdkman/candidates/java/* "$HOME"/.jdks/*; do
-    h="\${h%/}"
-    [ -n "$h" ] && [ -d "$h" ] || continue
-    m=$(jdk_major "$h")
-    case "$m" in ''|*[!0-9]*) continue;; esac
-    [ "$m" -ge 21 ] || continue
-    if [ "$m" -gt "$bestm" ]; then best="$h"; bestm="$m"; fi
-  done
-  JAVA_HOME_FOUND="$best"; JAVA_MAJOR="$bestm"
-}
-find_jdk
-if [ -z "$JAVA_HOME_FOUND" ]; then
-  step "No JDK 21 or newer was found on this unit; installing Temurin ${JDK_VERSION} (Eclipse Adoptium) into ~/.local/share/sparkdash/jdk"
-  JSTG="$JROOT/.staging-$$"
-  TMPS="$TMPS $JSTG"
-  rm -rf -- "$JSTG"; mkdir -p "$JSTG" || fail "Could not create the JDK staging directory." 1
-  fetch "\${SPARKDASH_REA_JDK_URL:-$JURL}" "$JSTG/jdk.tar.gz" "$JBYTES" "the JDK" || fail "Could not download the JDK (is github.com reachable from this unit?)." 3
-  GOT=$(sha256sum "$JSTG/jdk.tar.gz" | cut -d' ' -f1)
-  [ "$GOT" = "\${SPARKDASH_REA_JDK_SHA256:-$JSHA}" ] || fail "The downloaded JDK does not match the pinned checksum; refusing to use it." 4
-  step "checksum verified; unpacking the JDK"
-  mkdir -p "$JSTG/x" && tar -xzf "$JSTG/jdk.tar.gz" -C "$JSTG/x" --strip-components=1 || fail "Could not unpack the JDK." 6
-  rm -f -- "$JSTG/jdk.tar.gz"
-  [ -n "$(jdk_major "$JSTG/x")" ] || fail "The unpacked JDK does not run here (wrong architecture or a missing library)." 6
-  JDEST="$JROOT/temurin-21-$JARCH"
-  rm -rf -- "$JDEST"
-  mv -- "$JSTG/x" "$JDEST" || fail "Could not move the JDK into place." 6
-  rm -rf -- "$JSTG"
-  find_jdk
-  [ -n "$JAVA_HOME_FOUND" ] || fail "The JDK was installed but is not usable." 6
-fi
-JH="$JAVA_HOME_FOUND"
-step "using JDK $JAVA_MAJOR at $JH"
-
-# ── Ghidra ──────────────────────────────────────────────────────────────────
-ND="$GFINAL/Ghidra/Features/Decompiler/os/$NATIVE"
-if [ -x "$GFINAL/support/analyzeHeadless" ] && [ -f "$GFINAL/Ghidra/application.properties" ]; then
-  step "Ghidra $GVER is already unpacked at $GFINAL"
-else
-  GSTG="$GROOT/$GVER.staging"
-  TMPS="$TMPS $GSTG"
-  rm -rf -- "$GSTG"; mkdir -p "$GSTG" || fail "Could not create the Ghidra staging directory." 1
-  fetch "\${SPARKDASH_REA_GHIDRA_URL:-${GHIDRA_URL}}" "$GSTG/ghidra.zip" ${GHIDRA_BYTES} "Ghidra $GVER" || fail "Could not download Ghidra (is github.com reachable from this unit?)." 3
-  GOT=$(sha256sum "$GSTG/ghidra.zip" | cut -d' ' -f1)
-  [ "$GOT" = "\${SPARKDASH_REA_GHIDRA_SHA256:-${GHIDRA_SHA256}}" ] || fail "The downloaded Ghidra does not match the pinned checksum; refusing to use it." 4
-  step "checksum verified; unpacking Ghidra"
-  mkdir -p "$GSTG/x" || fail "Could not create the Ghidra staging directory." 1
-  if [ "$UZ" = unzip ]; then
-    unzip -q -o "$GSTG/ghidra.zip" -d "$GSTG/x" || fail "Could not unpack Ghidra." 6
-  else
-    python3 -I - "$GSTG/ghidra.zip" "$GSTG/x" <<'PYEOF' || fail "Could not unpack Ghidra." 6
-import os, sys, zipfile
-src, dst = sys.argv[1], sys.argv[2]
-root = os.path.realpath(dst)
-with zipfile.ZipFile(src) as z:
-    for i in z.infolist():
-        target = os.path.realpath(os.path.join(dst, i.filename))
-        if target != root and not target.startswith(root + os.sep):
-            raise SystemExit("unsafe path in archive: " + i.filename)
-        z.extract(i, dst)
-        mode = (i.external_attr >> 16) & 0o777
-        if mode and not i.is_dir():
-            os.chmod(target, mode)
-PYEOF
-  fi
-  rm -f -- "$GSTG/ghidra.zip"
-  TOP=$(ls -d "$GSTG"/x/*/ 2>/dev/null | head -n 1)
-  TOP="\${TOP%/}"
-  [ -n "$TOP" ] && [ -f "$TOP/Ghidra/application.properties" ] || fail "The Ghidra archive did not contain a Ghidra release." 6
-  [ "$(sed -n 's/^application.version=//p' "$TOP/Ghidra/application.properties" | head -n 1)" = "$GVER" ] || fail "The unpacked Ghidra is not version $GVER." 6
-  # The scripts and native tools must be executable whichever way the archive was unpacked.
-  chmod +x "$TOP"/support/* "$TOP"/ghidraRun 2>/dev/null
-  find "$TOP" -path '*/os/*' -type f -exec chmod +x {} + 2>/dev/null
-  rm -rf -- "$GFINAL"
-  mv -- "$TOP" "$GFINAL" || fail "Could not move Ghidra into place." 1
-  rm -rf -- "$GSTG"
-fi
-
-# ── native decompiler (the release has none for aarch64 Linux) ───────────────
-if [ ! -x "$ND/decompile" ] || [ ! -x "$ND/sleigh" ]; then
-  check_build_tools
-  CPP="$GFINAL/Ghidra/Features/Decompiler/src/decompile/cpp"
-  [ -f "$CPP/Makefile" ] || fail "The Ghidra release has no decompiler sources to build." 6
-  JOBS=$(nproc 2>/dev/null || echo 2)
-  case "$JOBS" in ''|*[!0-9]*) JOBS=2;; esac
-  [ "$JOBS" -le 8 ] || JOBS=8
-  step "building Ghidra's native decompiler for $NATIVE (g++, $JOBS parallel jobs; a few minutes)"
-  BLOG="$GROOT/build-$$.log"
-  TMPS="$TMPS $BLOG"
-  # The Makefile hard-codes -m32 for any CPU that is not x86_64 (ARCH_TYPE=, on the command line, overrides it) and
-  # races on its object directories under -j, so they are created first.
-  ( cd "$CPP" && mkdir -p com_opt ghi_opt sla_opt && exec make -j"$JOBS" ARCH_TYPE= ghidra_opt sleigh_opt ) > "$BLOG" 2>&1 &
-  BG=$!
-  BT=0
-  while kill -0 "$BG" 2>/dev/null; do
-    sleep 1
-    BT=$((BT + 1))
-    [ $((BT % 15)) -eq 0 ] && step "  still building ($(find "$CPP" -name '*.o' 2>/dev/null | wc -l) object files compiled)"
-  done
-  wait "$BG"; BRC=$?
-  BG=""
-  if [ "$BRC" != 0 ] || [ ! -x "$CPP/ghidra_opt" ] || [ ! -x "$CPP/sleigh_opt" ]; then
-    tail -n 25 "$BLOG"
-    fail "Building Ghidra's decompiler failed (see the lines above)." 6
-  fi
-  mkdir -p "$ND" || fail "Could not create $ND." 1
-  install -m 755 "$CPP/ghidra_opt" "$ND/decompile" && install -m 755 "$CPP/sleigh_opt" "$ND/sleigh" || fail "Could not install the built decompiler." 1
-  ( cd "$CPP" && make clean >/dev/null 2>&1 ) || true
-  rm -f "$CPP"/ghidra_opt "$CPP"/sleigh_opt
-fi
-# Not a Ghidra requirement of REA, but Ghidra falls back to unreadable C++ names without it: best effort.
-DEMD="$GFINAL/GPL/DemanglerGnu"
-if [ ! -d "$DEMD/os/$NATIVE" ] && command -v gcc >/dev/null 2>&1; then
-  mkdir -p "$DEMD/os/$NATIVE" 2>/dev/null
-  for V in 2_41 2_24; do
-    SRC="$DEMD/src/demangler_gnu_v$V"
-    [ -d "$SRC/c" ] || continue
-    # 2.41 is the one Ghidra uses; 2.24 (legacy formats) does not link from the release's sources, so it is only attempted.
-    if ! gcc -O2 -w -I"$SRC/headers" -I"$SRC/c" -o "$DEMD/os/$NATIVE/demangler_gnu_v$V" "$SRC"/c/*.c >/dev/null 2>&1; then
-      rm -f "$DEMD/os/$NATIVE/demangler_gnu_v$V"
-      [ "$V" != 2_41 ] || warn "could not build the C++ demangler (C++ symbol names will stay mangled)"
-    fi
-  done
-fi
-"$ND/decompile" < /dev/null >/dev/null 2>&1
-DRC=$?
-[ "$DRC" -ne 126 ] && [ "$DRC" -ne 127 ] && [ "$DRC" -lt 128 ] || fail "The decompiler built for this unit does not run (exit $DRC)." 4
-
-# ── smoke test: a real headless import with this JDK ────────────────────────
-step "checking the install (headless import of a small program with Ghidra; about a minute)"
-PT=$(mktemp -d "\${TMPDIR:-/tmp}/sparkdash-ghidra.XXXXXX") || fail "Could not create a temporary directory." 1
-TMPS="$TMPS $PT"
-# A real ELF file (command -v would name the shell builtin "true", not a path).
-SAMPLE=""
-for c in /bin/true /usr/bin/true /bin/ls /usr/bin/ls /bin/sh /usr/bin/env; do
-  [ -f "$c" ] && [ -r "$c" ] || continue
-  SAMPLE=$(readlink -f "$c" 2>/dev/null) && [ -f "$SAMPLE" ] && break
-  SAMPLE=""
-done
-[ -n "$SAMPLE" ] || fail "No program was found on this unit to use as Ghidra's import test." 5
-SOUT="$PT/out.log"
-( export JAVA_HOME="$JH"; export PATH="$JH/bin:$PATH"; export GHIDRA_INSTALL_DIR="$GFINAL"
-  timeout -k 10 600 "$GFINAL/support/analyzeHeadless" "$PT" probe -import "$SAMPLE" -noanalysis -deleteProject ) < /dev/null > "$SOUT" 2>&1
-SRC=$?
-if [ "$SRC" != 0 ] || ! grep -q "Import succeeded" "$SOUT" 2>/dev/null; then
-  tail -n 25 "$SOUT"
-  fail "Ghidra could not import a test program with this JDK (exit $SRC); see the lines above." 4
-fi
-step "Ghidra imported a test program"
-
-# ── record ──────────────────────────────────────────────────────────────────
-mkdir -p "$(dirname "$REC")" || fail "Could not create the config directory." 1
-{ printf 'VERSION=%s\\n' "$GVER"; printf 'GHIDRA_INSTALL_DIR=%s\\n' "$GFINAL"; printf 'JAVA_HOME=%s\\n' "$JH"; printf 'JAVA_MAJOR=%s\\n' "$JAVA_MAJOR"; printf 'DATE=%s\\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"; } > "$REC.$$" && chmod 600 "$REC.$$" && mv -f -- "$REC.$$" "$REC" || fail "Could not write the install record." 1
-
-# REA's own verdict, when REA is installed (informational: the doctor also lists unrelated optional engines).
-LCH="${LAUNCHER}"
-if [ -x "$LCH" ]; then
-  export JAVA_HOME="$JH"; export PATH="$JH/bin:$PATH"; export GHIDRA_INSTALL_DIR="$GFINAL"
-  GD=$(timeout -k 5 90 "$LCH" doctor --json 2>/dev/null < /dev/null | head -c 1048576)
-  if printf %s "$GD" | grep -q '"name": *"ghidra' ; then
-    printf %s "$GD" | tr ',' '\\n' | grep -i -A2 '"name": *"ghidra' | head -n 12
-  fi
-fi
-step "installed: Ghidra $GVER at $GFINAL (JDK $JAVA_MAJOR at $JH)"
 echo "${TX}0"
 `);
 }

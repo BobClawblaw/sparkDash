@@ -14,8 +14,6 @@ import {
   buildDeleteRunProgram,
   buildExportProgram,
   buildInstallProgram,
-  buildGhidraInstallProgram,
-  GHIDRA_VERSION,
   buildReadResultProgram,
   buildRunProgram,
   buildStatusProgram,
@@ -39,8 +37,6 @@ const MAX_BUFFER_CHARS = 2 * 1024 * 1024;
 const MAX_BUFFER_LINES = 5000;
 const STOP_TIMEOUT_MS = 70_000;
 const INSTALL_MAX_MS = 30 * 60 * 1000;
-/** Ghidra + JDK are ~800 MiB of downloads and a native build. */
-const ENGINE_INSTALL_MAX_MS = 75 * 60 * 1000;
 const STATUS_TIMEOUT_MS = 150_000;
 const READ_TIMEOUT_MS = 120_000;
 const VIEW_TIMEOUT_MS = 150_000;
@@ -170,28 +166,6 @@ function reaErrorOf(value) {
  * manager's process plumbing (one live job per unit, detached on-unit run, re-attach), with REA's
  * own programs, result capture, views and uploads on top. The tool-eval JSONL logic never runs.
  */
-/** The GHIDRA_* lines of the status program, bounded and shape-checked. */
-function parseGhidra(kv) {
-  const num = (v) => (/^[0-9]{1,4}$/.test(v ?? "") ? Number.parseInt(v, 10) : null);
-  const version = /^[0-9A-Za-z.+-]{1,40}$/.test(kv.GHIDRA_VERSION ?? "") ? kv.GHIDRA_VERSION : null;
-  const freeKib = /^[0-9]{1,15}$/.test(kv.GHIDRA_FREE_KIB ?? "") ? Number.parseInt(kv.GHIDRA_FREE_KIB, 10) : null;
-  return {
-    arch: /^[A-Za-z0-9_]{1,20}$/.test(kv.GHIDRA_ARCH ?? "") ? kv.GHIDRA_ARCH : null,
-    /** A Ghidra directory resolved (managed or the unit's own), with its version. */
-    dir: kv.GHIDRA_DIR ? clip(kv.GHIDRA_DIR, 300) : null,
-    version,
-    /** The native decompiler for this CPU exists in it. */
-    nativeOk: kv.GHIDRA_NATIVE === "1",
-    /** Major version of the 64-bit full JDK REA would use (null: none / too old to tell). */
-    javaMajor: num(kv.GHIDRA_JAVA),
-    managed: kv.GHIDRA_MANAGED === "1",
-    pinnedVersion: /^[0-9.]{1,20}$/.test(kv.GHIDRA_PIN ?? "") ? kv.GHIDRA_PIN : GHIDRA_VERSION,
-    installable: kv.GHIDRA_INSTALLABLE === "1",
-    installReason: kv.GHIDRA_INSTALL_REASON ? clip(kv.GHIDRA_INSTALL_REASON, 240) : null,
-    freeKib,
-  };
-}
-
 export class ReaManager extends ToolEvalManager {
   constructor(opts = {}) {
     super(opts);
@@ -384,7 +358,6 @@ export class ReaManager extends ToolEvalManager {
       },
       python3: Boolean(kv.PYTHON3),
       npm: Boolean(kv.NPM),
-      ghidra: parseGhidra(kv),
       installed: Boolean(kv.LAUNCHER),
       version,
       pinnedVersion: REA_VERSION,
@@ -418,22 +391,6 @@ export class ReaManager extends ToolEvalManager {
       return { ok: true, job };
     }
     this._startJob(spark, job, buildInstallProgram({ nonce: job.nonce }), { stdin: payload, maxMs: INSTALL_MAX_MS });
-    return { ok: true, job };
-  }
-
-  /**
-   * Install Ghidra (and a JDK when the unit has none) on the unit, streamed like the REA install but kept
-   * apart from it: the job carries `engine: "ghidra"` so the two install cards never show each other's output.
-   * @returns {{ ok: true, job: object } | { ok: false, reason: "busy", active: object }}
-   */
-  installGhidra(spark) {
-    const free = this.canStart(spark);
-    if (!free.ok) return free;
-    const busy = this.activeJob(spark.id);
-    if (busy) this._detach(busy, spark);
-    const job = this._newJob(spark, { id: `ghidra-${crypto.randomBytes(3).toString("hex")}`, kind: "install", type: "rea" });
-    job.engine = "ghidra";
-    this._startJob(spark, job, buildGhidraInstallProgram({ nonce: job.nonce }), { maxMs: ENGINE_INSTALL_MAX_MS });
     return { ok: true, job };
   }
 
@@ -523,12 +480,11 @@ export class ReaManager extends ToolEvalManager {
     if (job.kind === "install") {
       if (job.status === "cancelled" || job.status === "detached") return;
       const ok = job.status === "completed";
-      const what = job.engine === "ghidra" ? `Ghidra ${GHIDRA_VERSION}` : `REA ${REA_VERSION}`;
       this.onEvent({
         type: `rea.install.${ok ? "completed" : "failed"}`,
         severity: ok ? "success" : "error",
         sparkId: job.sparkId,
-        message: ok ? `${what} installed` : `${what} install failed`,
+        message: ok ? `REA ${REA_VERSION} installed` : "REA install failed",
       });
       return;
     }

@@ -253,7 +253,6 @@ test("gate off: starting, installing, uploads, views, export and compare answer 
   assert.equal(status.body.pinnedVersion, REA_VERSION);
   assert.equal((await h.api(`${R}/runs`)).status, 200);
   assert.equal((await h.api(`${R}/install/stream`)).status, 404);
-  assert.equal((await h.api(`${R}/ghidra/install/stream`)).status, 404);
   assert.equal((await h.api(`${R}/watch`, { method: "DELETE" })).status, 200);
 
   // Writes
@@ -263,7 +262,6 @@ test("gate off: starting, installing, uploads, views, export and compare answer 
   h.store.add(other);
   const refused = [
     h.api(`${R}/install`, { method: "POST", body: {} }),
-    h.api(`${R}/ghidra/install`, { method: "POST", body: {} }),
     h.api(`${R}/runs`, { method: "POST", body: jsRun(h) }),
     h.api(`${R}/uploads`, { method: "POST", body: {} }),
     h.api(`${R}/uploads/up-20261012-101010-abc123/files?path=a.txt`, { method: "PUT", body: Buffer.from("x") }),
@@ -466,7 +464,6 @@ test("busy: a second start is 409 and evicts nothing; stop; result/view/export a
   assert.ok(b.body.active);
   assert.deepEqual(h.store.list().map((r) => r.id).sort(), before, "a refused start stores nothing and evicts nothing");
   assert.equal((await h.api(`${R}/install`, { method: "POST", body: {} })).status, 409);
-  assert.equal((await h.api(`${R}/ghidra/install`, { method: "POST", body: {} })).status, 409);
 
   const rid = a.body.run.id;
   for (const p of ["result", "view?collection=modules", "export"]) {

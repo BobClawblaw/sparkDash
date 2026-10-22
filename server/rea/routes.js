@@ -1,5 +1,5 @@
 import { getSettings } from "../settings.js";
-import { GHIDRA_VERSION, REA_VERSION, runDirRef } from "./commands.js";
+import { REA_VERSION, runDirRef } from "./commands.js";
 import { publicSpec, workflowById } from "./spec.js";
 import { isValidRunId, newRunId } from "./ReaStore.js";
 import {
@@ -151,31 +151,9 @@ export function registerReaRoutes(app, deps) {
     const spark = sparkOr404(req, res);
     if (!spark) return;
     const job = manager.latestJob(spark.id);
-    if (!job || job.kind !== "install" || job.engine) return res.status(404).json({ error: "No install has run since the dashboard started" });
+    if (!job || job.kind !== "install") return res.status(404).json({ error: "No install has run since the dashboard started" });
     const read = manager.readJob(spark.id, job.id, { lineSince: nonNegInt(req.query.lineSince) });
     if (!read) return res.status(404).json({ error: "No install has run since the dashboard started" });
-    res.json({ job: read.job, lines: read.lines, partial: read.partial, nextLine: read.nextLine });
-  });
-
-  // Ghidra (and a JDK when the unit has none): its own install job and stream, never mixed with REA's.
-  app.post(`${base}/ghidra/install`, (req, res) => {
-    const spark = sparkOr404(req, res);
-    if (!spark) return;
-    if (gated(res)) return;
-    if (limited(req, res)) return;
-    const result = manager.installGhidra(spark);
-    if (!result.ok) return res.status(409).json(busyBody(result.active));
-    res.status(202).json({ job: manager.summary(result.job), version: GHIDRA_VERSION });
-  });
-
-  app.get(`${base}/ghidra/install/stream`, (req, res) => {
-    const spark = sparkOr404(req, res);
-    if (!spark) return;
-    const job = manager.latestJob(spark.id);
-    const none = { error: "No Ghidra install has run since the dashboard started" };
-    if (!job || job.kind !== "install" || job.engine !== "ghidra") return res.status(404).json(none);
-    const read = manager.readJob(spark.id, job.id, { lineSince: nonNegInt(req.query.lineSince) });
-    if (!read) return res.status(404).json(none);
     res.json({ job: read.job, lines: read.lines, partial: read.partial, nextLine: read.nextLine });
   });
 

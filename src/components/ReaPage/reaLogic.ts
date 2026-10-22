@@ -1,7 +1,6 @@
 import type {
   ReaArgSpec,
   ReaDoctorCheck,
-  ReaGhidraStatus,
   ReaExecClass,
   ReaResultShape,
   ReaRun,
@@ -68,65 +67,6 @@ export function installExitExplanation(code: number | null | undefined): string 
     default:
       return null;
   }
-}
-
-/** What each exit code of the Ghidra installer means. */
-export function ghidraExitExplanation(code: number | null | undefined): string | null {
-  switch (code) {
-    case 3:
-      return "A download failed (Ghidra or the JDK, both from github.com). Check that the unit can reach github.com, that it has free disk space, and try again. Nothing was switched over.";
-    case 4:
-      return "A check failed: a download did not match the checksum pinned in this dashboard, or Ghidra could not import a test program with the JDK it was given. The output above shows which. Nothing was pointed at it.";
-    case 5:
-      return "This unit cannot install Ghidra as it is: it is not Linux x86_64/aarch64, a needed tool is missing (tar, sha256sum, curl or wget or python3, unzip or python3, and g++ and make on ARM), or the disk is too full. The output above names what is missing.";
-    case 6:
-      return "Ghidra or the JDK could not be unpacked, or Ghidra's native decompiler could not be built or run on this unit. The output above has the compiler's messages.";
-    case 124:
-      return "The install ran out of time. Run it again: what was already downloaded and unpacked is checked and reused.";
-    case 143:
-      return "The install was stopped.";
-    default:
-      return null;
-  }
-}
-
-export type GhidraState = "ready" | "unusable" | "missing";
-
-export interface GhidraAssessment {
-  state: GhidraState;
-  /** Why an existing Ghidra cannot be used, one sentence each. */
-  problems: string[];
-  /** The install would also fetch a JDK 21 (none 21+ was found). */
-  needsJdk: boolean;
-  /** The install would build the native decompiler on the unit (CPU without a prebuilt one in the release). */
-  willBuild: boolean;
-  /** The install cannot start here, and why (null: it can). */
-  blocked: string | null;
-  /** Less than the install needs is free. */
-  lowDisk: boolean;
-}
-
-/** Ghidra 12.1.x is what REA's bridge accepts; a 64-bit full JDK 21+ and the native decompiler are required. */
-export function assessGhidra(g: ReaGhidraStatus | null | undefined): GhidraAssessment | null {
-  if (!g) return null;
-  const line = g.pinnedVersion.split(".").slice(0, 2).join(".");
-  const found = Boolean(g.dir && g.version);
-  const problems: string[] = [];
-  if (found) {
-    if (!g.version?.startsWith(`${line}.`) && g.version !== line) problems.push(`Ghidra ${g.version} is not in the ${line}.x line REA works with.`);
-    if (!g.nativeOk) problems.push("Its native decompiler is missing for this CPU.");
-    if (g.javaMajor == null || g.javaMajor < 21) problems.push(g.javaMajor == null ? "No 64-bit full JDK was found for it." : `Java ${g.javaMajor} is too old (Ghidra needs JDK 21 or newer).`);
-  }
-  const state: GhidraState = !found ? "missing" : problems.length ? "unusable" : "ready";
-  const arm = g.arch === "aarch64" || g.arch === "arm64";
-  return {
-    state,
-    problems,
-    needsJdk: g.javaMajor == null || g.javaMajor < 21,
-    willBuild: arm && !(found && g.nativeOk),
-    blocked: g.installable ? null : (g.installReason ?? "This unit cannot install Ghidra."),
-    lowDisk: g.freeKib != null && g.freeKib < 4 * 1024 * 1024,
-  };
 }
 
 /** The unit has everything REA needs to start a run. */

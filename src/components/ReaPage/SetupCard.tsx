@@ -6,7 +6,7 @@ import { Panel } from "../ui/Panel";
 import { Tag } from "../ui/Tag";
 import type { InstallState } from "./hooks";
 import { CopyButton, Notice } from "./parts";
-import { assessGhidra, ghidraExitExplanation, groupDoctorChecks, installExitExplanation, nodeWillBeInstalled, readinessProblems, reaReady } from "./reaLogic";
+import { groupDoctorChecks, installExitExplanation, nodeWillBeInstalled, readinessProblems, reaReady } from "./reaLogic";
 
 interface SetupCardProps {
   unitName: string;
@@ -16,8 +16,6 @@ interface SetupCardProps {
   statusError: string | null;
   loading: boolean;
   install: InstallState;
-  /** The separate Ghidra install job; without it the Ghidra section only reports. */
-  ghidraInstall?: InstallState;
   onRecheck: () => void;
 }
 
@@ -94,19 +92,11 @@ function Check({ ok, label, detail }: { ok: boolean; label: string; detail?: str
   );
 }
 
-function InstallOutput({
-  install,
-  explain = installExitExplanation,
-  doneNote = "Done. Checking the unit again…",
-}: {
-  install: InstallState;
-  explain?: (code: number | null | undefined) => string | null;
-  doneNote?: string;
-}) {
+function InstallOutput({ install }: { install: InstallState }) {
   const job = install.job;
   if (!job) return null;
   const failed = job.status !== "running" && job.status !== "completed";
-  const why = failed ? explain(job.exitCode) : null;
+  const why = failed ? installExitExplanation(job.exitCode) : null;
   const tail = failed ? install.lines.slice(-6) : [];
   return (
     <div className="rea-install-out">
@@ -124,7 +114,7 @@ function InstallOutput({
       <LiveTerminal lines={install.lines} partial={install.partial} running={job.status === "running"} />
       {job.status === "completed" ? (
         <p className="rea-ok" role="status">
-          <CheckIcon className="h-3.5 w-3.5" /> {doneNote}
+          <CheckIcon className="h-3.5 w-3.5" /> Done. Checking the unit again…
         </p>
       ) : null}
       {failed ? (
@@ -138,111 +128,8 @@ function InstallOutput({
   );
 }
 
-/** Ghidra (and the JDK it needs): what is on the unit, and a one-click install that makes REA use it. */
-function GhidraSection({
-  id,
-  unitName,
-  status,
-  install,
-  otherBusy,
-  gate,
-}: {
-  id: string;
-  unitName: string;
-  status: ReaStatus;
-  install: InstallState;
-  otherBusy: boolean;
-  gate: string | null;
-}) {
-  const g = status.ghidra;
-  const a = assessGhidra(g);
-  if (!g || !a) return null;
-  const pinned = g.pinnedVersion;
-  const reason = gate ?? a.blocked ?? (otherBusy ? "Another install is running on this unit." : null) ?? (a.lowDisk ? `Only ${Math.floor((g.freeKib ?? 0) / 1024)} MiB are free in the home directory; the install needs about 4 GiB.` : null);
-  const canInstall = !reason && !install.starting && !install.running;
-  const showButton = a.state !== "ready";
-  const verb = a.state === "unusable" ? "Replace it with" : "Install";
-  return (
-    <section aria-labelledby={id}>
-      <h4 className="rea-subtitle" id={id}>
-        Ghidra{" "}
-        <Tag tone={a.state === "ready" ? "good" : a.state === "unusable" ? "warn" : "neutral"}>
-          {a.state === "ready" ? "ready" : a.state === "unusable" ? "needs attention" : "not installed"}
-        </Tag>
-      </h4>
-      {a.state === "ready" ? (
-        <p className="rea-muted">
-          Ghidra {g.version} with Java {g.javaMajor} and its native decompiler is set up on {unitName}
-          {g.managed ? " by this dashboard" : ""}. REA uses it for the native-binary workflows.
-          {g.dir ? (
-            <>
-              {" "}
-              <code className="rea-engine__path">{g.dir}</code>
-            </>
-          ) : null}
-        </p>
-      ) : (
-        <>
-          <p className="rea-muted">
-            {a.state === "unusable"
-              ? `Ghidra ${g.version ?? ""} was found on ${unitName} but REA cannot use it as it is.`
-              : `Ghidra is the engine behind REA's native-binary workflows (decompiled code, assembly, symbols and references for executables).`}
-          </p>
-          {a.problems.length ? (
-            <ul className="rea-problems" aria-label="Problems with the Ghidra on this unit">
-              {a.problems.map((p) => (
-                <li key={p}>{p}</li>
-              ))}
-            </ul>
-          ) : null}
-          <Notice tone="info" title={`What “Install Ghidra ${pinned}” does on ${unitName}`}>
-            <ul className="rea-steps">
-              <li>
-                Downloads Ghidra {pinned} (about 570 MB) from github.com and checks its SHA-256 against the value pinned in this dashboard.
-              </li>
-              <li>
-                {a.needsJdk
-                  ? "Uses a JDK 21 or newer if the unit has one; otherwise downloads Eclipse Temurin 21 (about 205 MB, also checksum-verified)."
-                  : "Uses the JDK 21+ already on the unit."}
-              </li>
-              {a.willBuild ? (
-                <li>
-                  Builds Ghidra&apos;s native decompiler on the unit ({g.arch}): the release has none for this CPU. Needs <code>g++</code> and <code>make</code>; takes a few minutes.
-                </li>
-              ) : null}
-              <li>Imports a small test program headlessly to prove the install works, and only then points REA at it.</li>
-              <li>
-                Everything goes under <code>~/.local/share/sparkdash</code> (about 2 GB). No root, no package manager, nothing else on the unit is touched. If
-                the unit user already sets <code>GHIDRA_INSTALL_DIR</code> in the environment, that one is left in charge.
-              </li>
-            </ul>
-          </Notice>
-          {showButton ? (
-            <div className="rea-actions">
-              <button type="button" className="btn btn--primary" disabled={!canInstall} onClick={() => void install.start()}>
-                {install.starting || install.running ? "Installing Ghidra…" : `${verb} Ghidra ${pinned}`}
-              </button>
-              {reason && !install.running ? (
-                <span className="rea-hint" role="status">
-                  {reason}
-                </span>
-              ) : null}
-            </div>
-          ) : null}
-        </>
-      )}
-      {install.error && !install.running ? (
-        <Notice tone="bad" title={install.error.status === 409 ? "Another job is running on this unit" : install.error.status === 403 ? "The dashboard does not allow this" : "The install was not started"}>
-          {install.error.message}
-        </Notice>
-      ) : null}
-      <InstallOutput install={install} explain={ghidraExitExplanation} doneNote="Ghidra is installed and was checked. Re-checking the unit…" />
-    </section>
-  );
-}
-
 /** Readiness of the unit, the one-click install, the doctor checks, providers and engines. */
-export function SetupCard({ unitName, setup, setupError, status, statusError, loading, install, ghidraInstall, onRecheck }: SetupCardProps) {
+export function SetupCard({ unitName, setup, setupError, status, statusError, loading, install, onRecheck }: SetupCardProps) {
   const uid = useId();
   const pinned = setup?.pinnedVersion ?? status?.pinnedVersion ?? "";
   const minNode = setup?.node.min ?? "22.19";
@@ -257,19 +144,18 @@ export function SetupCard({ unitName, setup, setupError, status, statusError, lo
         : !setup && !setupError
           ? "Checking whether this dashboard allows changes…"
           : null;
-  const reason = problems[0] ?? gate ?? (install.running || ghidraInstall?.running ? "An install is already running on this unit." : null) ?? (!status ? "Checking the unit…" : null);
+  const reason = problems[0] ?? gate ?? (install.running ? "An install is already running on this unit." : null) ?? (!status ? "Checking the unit…" : null);
   const willInstallNode = nodeWillBeInstalled(status);
   const nodeVersion = status?.node.installVersion ?? "22";
   const verb = status?.installed ? (outdated ? "Update to" : "Reinstall") : "Install";
   const showInstall = !status || !ready || outdated;
   const canInstall = !reason && !install.starting && !install.running;
-  const anyInstallRunning = install.running || Boolean(ghidraInstall?.running);
 
   return (
     <Panel
       title={`REA on ${unitName}`}
       actions={
-        <button type="button" className="btn btn--sm btn--ghost" onClick={onRecheck} disabled={loading || anyInstallRunning}>
+        <button type="button" className="btn btn--sm btn--ghost" onClick={onRecheck} disabled={loading || install.running}>
           <RotateIcon className={`h-3.5 w-3.5${loading ? " rea-spin" : ""}`} /> Re-check
         </button>
       }
@@ -354,10 +240,6 @@ export function SetupCard({ unitName, setup, setupError, status, statusError, lo
         <InstallOutput install={install} />
 
         {status?.doctor ? <DoctorSection id={`${uid}-doctor`} checks={status.doctor.checks} /> : null}
-
-        {status?.reachable && ghidraInstall ? (
-          <GhidraSection id={`${uid}-ghidra`} unitName={unitName} status={status} install={ghidraInstall} otherBusy={install.running} gate={gate} />
-        ) : null}
 
         {status && status.providers.length ? (
           <section aria-labelledby={`${uid}-prov`}>

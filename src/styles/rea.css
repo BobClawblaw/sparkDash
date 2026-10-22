@@ -190,14 +190,6 @@
   color: var(--color-muted);
   overflow-wrap: anywhere;
 }
-.rea-steps {
-  margin: 0;
-  padding-left: 18px;
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  font-size: 13px;
-}
 .rea-problems {
   margin: 4px 0 0;
   padding-left: 18px;

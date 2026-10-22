@@ -1044,21 +1044,6 @@ export async function readReaInstallStream(sparkId: string, lineSince = 0): Prom
   }
 }
 
-/** Install Ghidra (and a JDK 21 when the unit has none) on the unit. Streamed through readReaGhidraInstallStream. */
-export function installReaGhidra(sparkId: string): Promise<{ job: ReaJob; version: string }> {
-  return reaFetch(`${reaBase(sparkId)}/ghidra/install`, { method: "POST", body: "{}" });
-}
-
-/** The latest Ghidra install job and its output since `lineSince`; null when none has run since the dashboard started. */
-export async function readReaGhidraInstallStream(sparkId: string, lineSince = 0): Promise<ReaInstallStream | null> {
-  try {
-    return await reaFetch<ReaInstallStream>(`${reaBase(sparkId)}/ghidra/install/stream?lineSince=${lineSince}`);
-  } catch (e) {
-    if (e instanceof ReaApiError && e.status === 404) return null;
-    throw e;
-  }
-}
-
 export function listReaRuns(sparkId: string): Promise<{ runs: ReaRun[]; active: ReaJob | null }> {
   return reaFetch(`${reaBase(sparkId)}/runs`);
 }

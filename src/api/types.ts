@@ -2145,25 +2145,6 @@ export interface ReaDoctorCheck {
   remediation?: string;
 }
 
-/** Ghidra on the unit and whether the dashboard can install it (the optional native-analysis engine). */
-export interface ReaGhidraStatus {
-  /** `uname -m` of the unit (aarch64 units build Ghidra's decompiler on the unit). */
-  arch: string | null;
-  /** The Ghidra directory REA would use, from GHIDRA_INSTALL_DIR, the dashboard's install or the PATH. */
-  dir: string | null;
-  version: string | null;
-  /** The native decompiler for this CPU exists in that directory. */
-  nativeOk: boolean;
-  /** Major version of the 64-bit full JDK REA would use; null when there is none. */
-  javaMajor: number | null;
-  /** Installed by this dashboard (and exported to REA by it). */
-  managed: boolean;
-  pinnedVersion: string;
-  installable: boolean;
-  installReason: string | null;
-  freeKib: number | null;
-}
-
 export interface ReaStatus {
   reachable: boolean;
   node: {
@@ -2178,7 +2159,6 @@ export interface ReaStatus {
   npm: boolean;
   /** python3 is on the unit (needed only to unpack archive uploads). */
   python3?: boolean;
-  ghidra?: ReaGhidraStatus;
   installed: boolean;
   version: string | null;
   pinnedVersion: string;

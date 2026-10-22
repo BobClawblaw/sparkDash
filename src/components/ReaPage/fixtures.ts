@@ -125,25 +125,10 @@ export const setupData = (over: Partial<ReaSetup> = {}): ReaSetup => ({
   ...over,
 });
 
-export const ghidraData = (over: Partial<NonNullable<ReaStatus["ghidra"]>> = {}): NonNullable<ReaStatus["ghidra"]> => ({
-  arch: "aarch64",
-  dir: null,
-  version: null,
-  nativeOk: false,
-  javaMajor: null,
-  managed: false,
-  pinnedVersion: "12.1.4",
-  installable: true,
-  installReason: null,
-  freeKib: 50 * 1024 * 1024,
-  ...over,
-});
-
 export const statusData = (over: Partial<ReaStatus> = {}): ReaStatus => ({
   reachable: true,
   node: { path: "/usr/bin/node", version: "22.20.0", ok: true },
   npm: true,
-  ghidra: ghidraData(),
   installed: true,
   version: "6.4.0",
   pinnedVersion: "6.4.0",
