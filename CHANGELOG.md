@@ -10,6 +10,7 @@ Format: version sections are listed newest first.
 ## [Unreleased]
 
 ### Fixed
+- **Apple GPU identity uses the macmon SoC name**, with compatibility fallback for older macmon. Thanks to @eXsoR65 (#261).
 - **Low-power health findings describe the observation** without diagnosing a stuck GPU or recommending a reset from utilisation and watts alone. The guidance asks readers to check workload progress and explains memory-bound decode. Reported by @Nipale-ai (#267).
 - **Cost compare on a fresh install shows a neutral empty catalog** when fetching is disabled and no catalog exists, with setup guidance and Retry. Failed enabled fetches still report an error. Reported by @Nipale-ai (#269).
 - **Cost compare requires a hosted-model choice.** Fresh browsers and removed catalog entries no longer silently price usage as the alphabetically first model. USD prices and context grouping use a consistent US locale. Reported by @Nipale-ai (#268).
