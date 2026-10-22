@@ -1913,16 +1913,10 @@ export class LlmProbe {
             const dPrompt = prompt - prevPrompt;
             const dSec = pSum - prevSum;
             if (pCount > prevCount && dPrompt > 0) {
-              // Sanity gate (all conditions measured on a live server): tiny
-              // prompts (the 1-200-token showcase/bench kind) and prefix-cache
-              // servings finish with sub-millisecond prefill times, so their
-              // ratio is timer noise or cache credit, not GPU throughput —
-              // observed junk windows ran 44k-313k tok/s against a genuine
-              // cold-prefill ground truth of ~2.8-3.0k (three independent
-              // ~99k-token runs). A real prefill needs real time (>=50 ms),
-              // enough tokens to mean something (>=50), and no GB10-class
-              // Effective rates include cache credit and vary by host; do not cap them
-              // using one machine's cold-compute throughput.
+              // Sub-millisecond and tiny-prompt windows are too noisy to
+              // measure reliably: require at least 50 ms and 50 tokens.
+              // Effective rates include cache credit and vary by host; do not
+              // cap them using one machine's cold-compute throughput.
               const rate = Math.round((dPrompt / dSec) * 100) / 100;
               if (dSec >= 0.05 && dPrompt >= 50) {
                 // Window ratio = mean over the requests finished in it; the
