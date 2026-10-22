@@ -1122,17 +1122,22 @@
 }
 
 /* ─── History panel (Settings → Metrics history) ──────── */
+/* A size container (it holds no dialogs): the grid follows the panel's own width, which is the
+   hardware column at xl+ and the page width when stacked. */
+.sp-hist {
+  container-type: inline-size;
+}
 .sp-hist-grid {
   display: grid;
   grid-template-columns: minmax(0, 1fr);
   gap: 10px;
 }
-@media (min-width: 640px) {
+@container (min-width: 560px) {
   .sp-hist-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
-@media (min-width: 1280px) {
+@container (min-width: 900px) {
   .sp-hist-grid {
     grid-template-columns: repeat(3, minmax(0, 1fr));
   }

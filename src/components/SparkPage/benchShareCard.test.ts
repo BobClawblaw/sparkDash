@@ -616,7 +616,7 @@ describe("tool eval share card", () => {
   const run = { status: "completed" as const, startedAt: 1_000, finishedAt: 125_000, model: null };
 
   it("carries the headline numbers, the outcome split and a tile per category", () => {
-    const m = buildToolEvalShareCard(result(), run, { sparkName: "spark-38bd" }, Date.UTC(2026, 8, 17, 12));
+    const m = buildToolEvalShareCard(result(), run, { sparkName: "spark-38bd" }, new Date(2026, 8, 17, 12).getTime());
     const te = m.toolEval!;
     expect([m.title, m.host, m.status.label]).toEqual(["Tool Eval Bench", "spark-38bd", "COMPLETED"]);
     expect([te.score, te.rating, te.stars, te.modelName]).toEqual([82.46, "Good", 4, "org/model"]);
@@ -699,7 +699,8 @@ describe("tool eval comparison card", () => {
       },
       ...over,
     })!;
-  const run = { label: "", startedAt: Date.UTC(2026, 8, 10), model: null, baseUrl: "http://x", options: {}, type: "tool-eval" };
+  // Local noon: shareCardDate formats in local time, so a UTC-midnight start is the 9th west of UTC.
+  const run = { label: "", startedAt: new Date(2026, 8, 10, 12).getTime(), model: null, baseUrl: "http://x", options: {}, type: "tool-eval" };
   const a = () => side(60, [50, 80], ["pass", "fail", "partial", "pass"]);
   const b = () => side(72.5, [70, 75], ["pass", "pass", "fail", "pass"], { deployability: 71, responsiveness: 85 });
 
