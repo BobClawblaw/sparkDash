@@ -1,6 +1,6 @@
 import { act } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { VulnHuntApiError, type VulnHuntHarness, type VulnHuntInstallInfo, type VulnHuntInstallJob, type VulnHuntSetup, type VulnHuntStatus } from "../../api/types";
+import { VulnHuntApiError, type VulnHuntInstallInfo, type VulnHuntInstallJob, type VulnHuntSetup, type VulnHuntStatus } from "../../api/types";
 import { flush, render } from "../../testing/render";
 
 const api = vi.hoisted(() => ({
@@ -26,17 +26,6 @@ const setupData = (over: Partial<VulnHuntSetup> = {}): VulnHuntSetup => ({
   ...over,
 });
 
-const harness = (over: Partial<VulnHuntHarness> = {}): VulnHuntHarness => ({
-  id: "claude",
-  label: "Claude Code",
-  found: true,
-  wrapperInstalled: false,
-  skillsDir: "/home/u/.claude/skills",
-  roEnforced: false,
-  note: "",
-  ...over,
-});
-
 const statusData = (over: Partial<VulnHuntStatus> = {}, install: Partial<VulnHuntInstallInfo> = {}): VulnHuntStatus => ({
   reachable: true,
   installed: false,
@@ -55,10 +44,6 @@ const statusData = (over: Partial<VulnHuntStatus> = {}, install: Partial<VulnHun
     agentsDir: null,
     python311: "3.12",
     skillsDirCandidates: [],
-    harnesses: [
-      harness({ id: "claude", label: "Claude Code", found: true, roEnforced: true, note: "Uses claude -p with read-only tools." }),
-      harness({ id: "codex", label: "Codex CLI", found: false }),
-    ],
     ...install,
   },
   ...over,
@@ -76,7 +61,7 @@ const job = (over: Partial<VulnHuntInstallJob> = {}): VulnHuntInstallJob => ({
   ...over,
 });
 
-function mount(props: { setup?: VulnHuntSetup | null; status?: VulnHuntStatus; onRecheck?: () => void; onEnableOptIn?: () => Promise<void> } = {}) {
+function mount(props: { setup?: VulnHuntSetup | null; status?: VulnHuntStatus; onRecheck?: () => void } = {}) {
   const onRecheck = props.onRecheck ?? vi.fn();
   const view = render(
     <SetupCard
@@ -88,7 +73,6 @@ function mount(props: { setup?: VulnHuntSetup | null; status?: VulnHuntStatus; o
       loading={false}
       error={null}
       onRecheck={onRecheck}
-      onEnableOptIn={props.onEnableOptIn}
     />
   );
   const q = <T extends Element>(sel: string) => view.container.querySelector<T>(sel);
@@ -258,9 +242,7 @@ describe("install progress", () => {
     });
     expect(m.container.textContent).toContain("exit code 3");
     expect(m.container.textContent).toContain("pip failed");
-    // A job picked up from the server has no request to repeat here, so there is no Retry; the choices are open again.
-    expect(m.btn(/^Retry$/)).toBeUndefined();
-    expect(m.btn(/^Set up with Claude Code$/)!.disabled).toBe(false);
+    expect(m.btn(/^Retry$/)).toBeDefined();
     expect(m.onRecheck).toHaveBeenCalledTimes(1);
   });
 
@@ -281,168 +263,6 @@ describe("install progress", () => {
     expect(term.textContent).toContain("<b>partial</b>");
     expect(m.container.querySelector("pre.live-term img, pre.live-term script, pre.live-term b")).toBeNull();
     expect((window as unknown as { __pwned?: number }).__pwned).toBeUndefined();
-  });
-});
-
-describe("quick setup", () => {
-  const quickBtn = (m: ReturnType<typeof mount>, label = "Claude Code") => m.btn(new RegExp(`^(Set up|Update) with ${label}$`));
-  const readyVia = () =>
-    statusData(
-      { installed: true, ready: true, path: "/p", hostCommand: { source: "file", program: "vh-claude", found: true, file: "~/x", configured: true } },
-      {
-        installedRev: "0123456789abcdef",
-        upToDate: true,
-        harnesses: [harness({ wrapperInstalled: true, roEnforced: true }), harness({ id: "codex", label: "Codex CLI", found: true })],
-      }
-    );
-
-  it("offers a button only for harnesses found on the unit and lists the others as not found", async () => {
-    const m = mount({
-      status: statusData(
-        {},
-        {
-          harnesses: [
-            harness({ id: "claude", label: "Claude Code", found: true, roEnforced: true, note: "Read-only tools are enforced." }),
-            harness({ id: "codex", label: "Codex CLI", found: false }),
-            harness({ id: "opencode", label: "OpenCode", found: true, note: "Runs opencode headless." }),
-          ],
-        }
-      ),
-    });
-    await flush();
-    expect(m.container.textContent).toContain("Set up VulnHunter on spark-1");
-    expect(quickBtn(m)).toBeDefined();
-    expect(quickBtn(m, "OpenCode")).toBeDefined();
-    expect(quickBtn(m, "Codex CLI")).toBeUndefined();
-    expect(m.container.textContent).toContain("Not found on this unit: Codex CLI");
-    expect(m.container.textContent).toContain("Read-only tools are enforced.");
-    // Only the harness that enforces read-only carries the badge.
-    expect(m.container.textContent?.match(/read-only enforced/g)).toHaveLength(1);
-  });
-
-  it("points to Advanced when no harness CLI is found", async () => {
-    const m = mount({ status: statusData({}, { harnesses: [harness({ found: false }), harness({ id: "codex", label: "Codex CLI", found: false })] }) });
-    await flush();
-    expect(m.btn(/^Set up with/)).toBeUndefined();
-    expect(m.container.textContent).toContain("No supported agent CLI was found on spark-1");
-    expect(m.container.textContent).toContain("Advanced");
-  });
-
-  it("one click with the opt-in off turns it on, then installs with the harness id", async () => {
-    const order: string[] = [];
-    const onEnableOptIn = vi.fn(async () => void order.push("enable"));
-    api.installVulnHunt.mockImplementation(async () => {
-      order.push("install");
-      return { job: job(), revision: "r", repository: "x" };
-    });
-    const m = mount({ setup: setupData({ enabled: false, startAllowed: false, startBlockedReason: "VulnHunter is turned off." }), onEnableOptIn });
-    await flush();
-    expect(m.container.textContent).toContain(
-      "Turning this on lets this dashboard install VulnHunter and run an AI agent on this unit. Anyone who can reach the dashboard can then use it."
-    );
-    expect(quickBtn(m)!.disabled).toBe(false);
-    await act(async () => quickBtn(m)!.click());
-    await flush();
-    expect(order).toEqual(["enable", "install"]);
-    expect(api.installVulnHunt).toHaveBeenCalledWith("s1", { harness: "claude" });
-    expect(m.container.textContent).toContain("Installing…");
-  });
-
-  it("does not install when turning the opt-in on fails", async () => {
-    const onEnableOptIn = vi.fn().mockRejectedValue(new Error("settings are read-only"));
-    const m = mount({ setup: setupData({ enabled: false, startAllowed: false }), onEnableOptIn });
-    await flush();
-    await act(async () => quickBtn(m)!.click());
-    await flush();
-    expect(api.installVulnHunt).not.toHaveBeenCalled();
-    expect(m.q('[role="alert"]')!.textContent).toContain("settings are read-only");
-  });
-
-  it("skips the opt-in call when it is already on and hides the consent sentence", async () => {
-    api.installVulnHunt.mockResolvedValue({ job: job(), revision: "r", repository: "x" });
-    const onEnableOptIn = vi.fn();
-    const m = mount({ onEnableOptIn });
-    await flush();
-    expect(m.container.textContent).not.toContain("Turning this on lets this dashboard");
-    await act(async () => quickBtn(m)!.click());
-    expect(onEnableOptIn).not.toHaveBeenCalled();
-    expect(api.installVulnHunt).toHaveBeenCalledWith("s1", { harness: "claude" });
-  });
-
-  it("disables the buttons with a plain reason when Python 3.11 or git is missing", async () => {
-    const py = mount({ status: statusData({}, { python311: null }) });
-    await flush();
-    expect(quickBtn(py)!.disabled).toBe(true);
-    expect(py.q(".sec-quick")!.textContent).toContain("Python 3.11 or newer is needed on this unit.");
-    const git = mount({ status: statusData({ git: false, setsid: false }) });
-    await flush();
-    expect(quickBtn(git)!.disabled).toBe(true);
-    expect(git.q(".sec-quick")!.textContent).toContain("git is not installed on this unit.");
-    expect(git.q(".sec-quick")!.textContent).toContain("setsid");
-  });
-
-  it("explains exit code 127 with the last output lines, and Retry repeats the one-click request", async () => {
-    vi.useFakeTimers();
-    api.installVulnHunt.mockResolvedValue({ job: job(), revision: "r", repository: "x" });
-    api.readVulnHuntInstallStream
-      .mockResolvedValueOnce(null)
-      .mockResolvedValue({
-        job: job({ status: "failed", exitCode: 127, error: null, finishedAt: 3 }),
-        lines: [{ seq: 1, text: "claude: command not found", stream: "err" }],
-        partial: "",
-        nextLine: 1,
-      });
-    const m = mount();
-    await flush();
-    await act(async () => quickBtn(m)!.click());
-    await act(async () => {
-      await vi.advanceTimersByTimeAsync(1000);
-    });
-    const alert = m.q('[role="alert"]')!;
-    expect(alert.textContent).toContain("exit code 127");
-    expect(alert.textContent).toContain("missing on the unit");
-    expect(alert.textContent).toContain("claude: command not found");
-    api.installVulnHunt.mockClear();
-    await act(async () => m.btn(/^Retry$/)!.click());
-    expect(api.installVulnHunt).toHaveBeenCalledWith("s1", { harness: "claude" });
-  });
-
-  it("shows a refusal of the one-click request once, in the quick card", async () => {
-    api.installVulnHunt.mockRejectedValue(new VulnHuntApiError("A scan is running", 409));
-    const m = mount();
-    await flush();
-    await act(async () => quickBtn(m)!.click());
-    await flush();
-    expect(m.container.querySelectorAll('[role="alert"]')).toHaveLength(1);
-    expect(m.q(".sec-quick")!.textContent).toContain("Another job is running on this unit");
-  });
-
-  it("collapses into a ready summary with a Change harness disclosure", async () => {
-    const m = mount({ status: readyVia() });
-    await flush();
-    const text = m.q(".sec-quick")!.textContent ?? "";
-    expect(text).toContain("Ready");
-    expect(text).toContain("VulnHunter via Claude Code");
-    const details = m.q<HTMLDetailsElement>(".sec-quick details")!;
-    expect(details.querySelector("summary")!.textContent).toBe("Change harness");
-    expect(details.open).toBe(false);
-    expect(details.textContent).toContain("Update with Claude Code");
-    expect(m.q(".sec-quick h3")).toBeNull();
-  });
-
-  it("re-checks the unit when the install ends", async () => {
-    vi.useFakeTimers();
-    api.installVulnHunt.mockResolvedValue({ job: job(), revision: "r", repository: "x" });
-    api.readVulnHuntInstallStream
-      .mockResolvedValueOnce(null)
-      .mockResolvedValue({ job: job({ status: "completed", exitCode: 0, finishedAt: 5 }), lines: [], partial: "", nextLine: 0 });
-    const m = mount();
-    await flush();
-    await act(async () => quickBtn(m)!.click());
-    await act(async () => {
-      await vi.advanceTimersByTimeAsync(1000);
-    });
-    expect(m.onRecheck).toHaveBeenCalledTimes(1);
   });
 });
 

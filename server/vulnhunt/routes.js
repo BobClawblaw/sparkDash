@@ -11,7 +11,6 @@ import {
   MIN_TIMEOUT_MINUTES,
 } from "./validate.js";
 import { HOST_CMD_FILE, VULNHUNTER_REPO, VULNHUNTER_REV, runDirRef } from "./commands.js";
-import { harnessById } from "./harnesses.js";
 import { isValidRunId, newRunId } from "./VulnHuntStore.js";
 
 /** What the setup card shows. Plain data: the dashboard never runs the installer for the user. */
@@ -109,12 +108,9 @@ export function registerVulnHuntRoutes(app, { registry, manager, store, allowRun
     if (limited(req, res)) return;
     const blocked = startGate();
     if (blocked) return res.status(403).json({ error: blocked });
-    // One click: a preset id decides the directories, the wrapper and the harness command (all fixed server-side).
-    const preset = req.body?.harness != null ? harnessById(req.body.harness) : null;
-    if (req.body?.harness != null && !preset) return res.status(400).json({ error: "Unknown harness" });
-    const request = preset ? { ok: true, skillsDir: preset.skillsDir, agentsDir: preset.agentsDir } : validateInstallRequest(req.body);
+    const request = validateInstallRequest(req.body);
     if (!request.ok) return res.status(400).json({ error: request.error });
-    const result = manager.installVulnHunt(spark, { ...request, harness: preset });
+    const result = manager.installVulnHunt(spark, request);
     if (!result.ok) return res.status(409).json({ error: "Another VulnHunter job is running on this unit. Wait for it or stop it first.", active: result.active });
     res.status(202).json({ job: manager.summary(result.job), revision: VULNHUNTER_REV, repository: VULNHUNTER_REPO });
   });

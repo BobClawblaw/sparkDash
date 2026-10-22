@@ -32,7 +32,7 @@ describe("VulnHunter opt-in", () => {
     api.fetchVulnHuntStatus.mockResolvedValue({
       reachable: true, installed: false, path: null, git: true, setsid: true, ready: false, runRoot: null, error: null,
       hostCommand: { source: "none", program: null, found: false, file: null, configured: false },
-      install: { pinnedRev: "0".repeat(40), installedRev: null, upToDate: false, skillsDir: null, agentsDir: null, python311: "3.12", skillsDirCandidates: [], harnesses: [] },
+      install: { pinnedRev: "0".repeat(40), installedRev: null, upToDate: false, skillsDir: null, agentsDir: null, python311: "3.12", skillsDirCandidates: [] },
     });
     api.listVulnHuntRuns.mockResolvedValue({ runs: [], active: null });
     api.readVulnHuntInstallStream.mockResolvedValue(null);

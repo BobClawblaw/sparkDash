@@ -929,7 +929,7 @@ export function deleteVulnHuntScan(sparkId: string, runId: string, force = false
 }
 
 /** Stop watching the live job; a scan keeps going on the unit. */
-/** Install (or update) VulnHunter on the unit; `{ harness }` also sets up that harness's skill and wrapper. 400/403/409 come back as VulnHuntApiError with the server's message. */
+/** Install (or update) VulnHunter on the unit. 400/403/409 come back as VulnHuntApiError with the server's message. */
 export function installVulnHunt(sparkId: string, req: VulnHuntInstallRequest): Promise<VulnHuntInstallStarted> {
   return vhFetch(`${vhBase(sparkId)}/install`, { method: "POST", body: JSON.stringify(req) });
 }

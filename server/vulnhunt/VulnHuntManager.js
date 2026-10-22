@@ -15,7 +15,6 @@ import {
   buildStopProgram,
 } from "./commands.js";
 import { summarizeReport } from "./report.js";
-import { HARNESS_PRESETS } from "./harnesses.js";
 
 const RUN_WATCH_MAX_MS = 13 * 60 * 60 * 1000;
 /** Harness transcripts can be one huge JSON object per line: a displayed line is clipped, and the whole buffer has a byte budget. */
@@ -67,13 +66,13 @@ export class VulnHuntManager extends ToolEvalManager {
    * Install VulnHunter on the unit (pinned revision, minimal: skill + `vh`), streamed like any job.
    * @returns {{ ok: true, job: object } | { ok: false, reason: "busy", active: object }}
    */
-  installVulnHunt(spark, { skillsDir, agentsDir = "", harness = null, source = {} }) {
+  installVulnHunt(spark, { skillsDir, agentsDir = "", source = {} }) {
     const free = this.canStart(spark);
     if (!free.ok) return free;
     const busy = this.activeJob(spark.id);
     if (busy) this._detach(busy, spark);
     const job = this._newJob(spark, { id: `install-${crypto.randomBytes(3).toString("hex")}`, kind: "install", type: "vulnhunt" });
-    this._startJob(spark, job, buildInstallProgram({ skillsDir, agentsDir, harness, nonce: job.nonce, ...source }), { maxMs: INSTALL_MAX_MS });
+    this._startJob(spark, job, buildInstallProgram({ skillsDir, agentsDir, nonce: job.nonce, ...source }), { maxMs: INSTALL_MAX_MS });
     return { ok: true, job };
   }
 
@@ -156,15 +155,6 @@ export class VulnHuntManager extends ToolEvalManager {
         skillsDir: kv.INSTALLED_SKILLS_DIR || null,
         agentsDir: kv.INSTALLED_AGENTS_DIR || null,
         python311: kv.PYTHON311 || null,
-        harnesses: HARNESS_PRESETS.map((p) => ({
-          id: p.id,
-          label: p.label,
-          found: kv[`HARNESS_${p.id}`] === "1",
-          wrapperInstalled: kv[`WRAPPER_${p.id}`] === "1",
-          skillsDir: p.skillsDir,
-          roEnforced: p.roEnforced,
-          note: p.note,
-        })),
         skillsDirCandidates: res.output
           .split("\n")
           .filter((l) => l.startsWith("SKILLSDIR="))

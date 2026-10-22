@@ -14,8 +14,6 @@ interface HistoryProps {
   viewedId: string | null;
   onReload: () => void;
   onOpen: (run: VulnHuntRun) => void;
-  /** Fill the scan form with this run's source. */
-  onScanAgain: (run: VulnHuntRun) => void;
   onWatch: (run: VulnHuntRun) => void;
   onRefresh: (run: VulnHuntRun) => void;
   /** Resolves with `canForce` when the server could not confirm the scan had ended. */
@@ -25,7 +23,7 @@ interface HistoryProps {
 const COUNT_KEYS = SEVERITY_ORDER.filter((s) => s !== "Informational");
 
 /** Scans of this unit, newest first, with their severity counts and the row actions. */
-export function History({ runs, error, followedId, viewedId, onReload, onOpen, onScanAgain, onWatch, onRefresh, onDelete }: HistoryProps) {
+export function History({ runs, error, followedId, viewedId, onReload, onOpen, onWatch, onRefresh, onDelete }: HistoryProps) {
   const [confirm, setConfirm] = useState<{ id: string; force: boolean } | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
 
@@ -115,9 +113,6 @@ export function History({ runs, error, followedId, viewedId, onReload, onOpen, o
                           Check status
                         </button>
                       ) : null}
-                      <button type="button" className="btn btn--sm" onClick={() => onScanAgain(run)} aria-label={`Scan again: ${run.source.value}`}>
-                        Scan again
-                      </button>
                       <button type="button" className="btn btn--sm btn--ghost" onClick={() => setConfirm({ id: run.id, force: false })}>
                         Delete
                       </button>

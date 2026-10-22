@@ -401,8 +401,6 @@ export function useVulnHuntInstall(sparkId: string, onDone: () => void) {
   const [partial, setPartial] = useState("");
   const [error, setError] = useState<InstallError | null>(null);
   const [starting, setStarting] = useState(false);
-  /** What the last Start sent (one-click harness or manual directories); null for a job picked up from the server. */
-  const [lastRequest, setLastRequest] = useState<VulnHuntInstallRequest | null>(null);
   const sinceRef = useRef(0);
   const followedRef = useRef(false);
   const doneRef = useRef(onDone);
@@ -484,7 +482,6 @@ export function useVulnHuntInstall(sparkId: string, onDone: () => void) {
     async (req: VulnHuntInstallRequest): Promise<boolean> => {
       setError(null);
       setStarting(true);
-      setLastRequest(req);
       try {
         const r = await installVulnHunt(sparkId, req);
         if (!mountedRef.current) return true;
@@ -500,10 +497,7 @@ export function useVulnHuntInstall(sparkId: string, onDone: () => void) {
     [sparkId, follow]
   );
 
-  /** Send the last request again (null when there is none to repeat). */
-  const retry = useCallback(async (): Promise<boolean> => (lastRequest ? start(lastRequest) : false), [lastRequest, start]);
-
-  return { job, lines, partial, error, starting, running, start, retry, lastRequest, clearError: () => setError(null) };
+  return { job, lines, partial, error, starting, running, start, clearError: () => setError(null) };
 }
 
 // ── the harness command (write-only) ──

@@ -1,8 +1,10 @@
 import { useId, useState } from "react";
 import type { VulnHuntSetup, VulnHuntStatus } from "../../api/types";
+import { CheckIcon } from "../ui/icons";
+import { LiveTerminal, terminalText } from "../ui/LiveTerminal";
 import { Tag } from "../ui/Tag";
 import type { InstallError, useVulnHuntInstall } from "./hooks";
-import { Notice } from "./parts";
+import { CopyButton, Notice } from "./parts";
 import { installBlockedReason, shortRev } from "./securityLogic";
 
 export type InstallState = ReturnType<typeof useVulnHuntInstall>;
@@ -16,15 +18,16 @@ interface InstallStepProps {
 }
 
 const DEFAULT_SKILLS_DIR = "~/.claude/skills";
+const LAST_LINES = 6;
 
-export function errorTitle(e: InstallError): string {
+function errorTitle(e: InstallError): string {
   if (e.status === 403) return "The dashboard does not allow this";
   if (e.status === 409) return "Another job is running on this unit";
   if (e.status === 400) return "The unit's installer rejected the request";
   return "The install was not started";
 }
 
-/** Step 1: what VulnHunter state the unit is in, and the manual install / update form. Its output is shown by `InstallOutput`. */
+/** Step 1: what VulnHunter state the unit is in, and the install / update form with its live output. */
 export function InstallStep({ unitName, setup, setupError, status, install }: InstallStepProps) {
   const uid = useId();
   const info = status.install;
@@ -54,8 +57,8 @@ export function InstallStep({ unitName, setup, setupError, status, install }: In
     running: install.running,
   });
   const verb = installed ? "Update" : "Install";
-  // A refusal of the one-click request is shown by the quick setup card, not twice.
-  const manualRequest = install.lastRequest == null || "skillsDir" in install.lastRequest;
+  const job = install.job;
+  const lastLines = job?.status === "failed" || job?.status === "detached" || job?.status === "cancelled" ? install.lines.slice(-LAST_LINES) : [];
 
   const submit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -155,7 +158,7 @@ export function InstallStep({ unitName, setup, setupError, status, install }: In
             installed on the machine running the dashboard.
           </p>
 
-          {install.error && manualRequest ? (
+          {install.error ? (
             <Notice tone="bad" title={errorTitle(install.error)}>
               {install.error.message}
             </Notice>
@@ -174,6 +177,53 @@ export function InstallStep({ unitName, setup, setupError, status, install }: In
         </form>
       ) : null}
 
+      {install.running && install.error ? (
+        <Notice tone="warn" title="Lost contact with the install output (still trying)">
+          {install.error.message}
+        </Notice>
+      ) : null}
+
+      {job ? (
+        <div className="sec-install-out">
+          <div className="sec-install-out__head">
+            <Tag tone={job.status === "running" ? "acc" : job.status === "completed" ? "good" : "bad"}>
+              {job.status === "running"
+                ? "Installing…"
+                : job.status === "completed"
+                  ? "Installed"
+                  : job.status === "cancelled"
+                    ? "Install cancelled"
+                    : "Install failed"}
+            </Tag>
+            <CopyButton text={() => terminalText(install.lines, install.partial)} label="Copy output" />
+          </div>
+          <LiveTerminal lines={install.lines} partial={install.partial} running={job.status === "running"} emptyText="Waiting for output…" />
+          {job.status === "completed" ? (
+            <p className="sec-ok" role="status">
+              <CheckIcon className="h-3.5 w-3.5" /> Done. Checking the unit again…
+            </p>
+          ) : null}
+          {job.status !== "running" && job.status !== "completed" ? (
+            <Notice
+              tone="bad"
+              title={job.exitCode != null ? `The install did not finish (exit code ${job.exitCode})` : "The install did not finish"}
+              actions={
+                <button
+                  type="button"
+                  className="btn btn--sm"
+                  onClick={() => void install.start(agentsDir ? { skillsDir, agentsDir } : { skillsDir })}
+                  disabled={Boolean(reason) || install.starting}
+                >
+                  Retry
+                </button>
+              }
+            >
+              {job.error ? <p>{job.error}</p> : null}
+              {lastLines.length ? <pre className="sec-install-out__tail">{lastLines.map((l) => l.text).join("\n")}</pre> : null}
+            </Notice>
+          ) : null}
+        </div>
+      ) : null}
     </section>
   );
 }

@@ -26,7 +26,6 @@
  */
 
 import { exitToken } from "../tooleval/commands.js";
-import { HARNESS_PRESETS, wrapperName, wrapperScript } from "./harnesses.js";
 
 export { exitToken };
 
@@ -203,7 +202,6 @@ PF="$RD/prompt.txt"
 terminated
 stage hunt
 cd "$RD/src" || { RC=3; exit 3; }
-export SPARKDASH_VULNHUNT_RO="$RO"
 # The hunt runs in the background of THIS session so that a stop request and the time limit both
 # reach the harness and everything it started.
 vh host "$PF" &
@@ -387,9 +385,6 @@ if [ -f "${INSTALL_RECORD}" ]; then sed -n 's/^SKILLS_DIR=\\(.*\\)$/INSTALLED_SK
 for d in "$HOME/.claude/skills" "$HOME/.codex/skills" "$HOME/.config/opencode/skills" "$HOME/.grok/skills" "$HOME/.hermes/skills" "$HOME/.agents/skills"; do
   [ -d "$d" ] && echo "SKILLSDIR=$d"
 done
-export PATH="$HOME/.opencode/bin:$HOME/.bun/bin:$PATH"
-${HARNESS_PRESETS.map((p) => `if command -v ${p.bin} >/dev/null 2>&1; then echo "HARNESS_${p.id}=1"; else echo "HARNESS_${p.id}=0"; fi
-[ -x "$HOME/.local/bin/${wrapperName(p)}" ] && echo "WRAPPER_${p.id}=1"`).join("\n")}
 PYV=""; for c in python3.13 python3.12 python3.11 python3; do
   if command -v "$c" >/dev/null 2>&1 && "$c" -c 'import sys; sys.exit(0 if sys.version_info[:2] >= (3, 11) else 1)' 2>/dev/null; then PYV=$("$c" -c 'import sys; print("%d.%d" % sys.version_info[:2])'); break; fi
 done
@@ -436,21 +431,6 @@ const LAUNCHER_B64 = Buffer.from(
   "utf8"
 ).toString("base64");
 
-/** Shell for the one-click path: find the harness CLI, write its wrapper, save the wrapper as the host command. */
-function harnessSetup(preset) {
-  const wrapperB64 = Buffer.from(wrapperScript(preset), "utf8").toString("base64");
-  const name = wrapperName(preset);
-  return `
-step "setting up ${preset.label}"
-HBIN=$(command -v ${preset.bin} 2>/dev/null) || HBIN=""
-[ -n "$HBIN" ] || fail "${preset.label} (${preset.bin}) was not found on this unit." 127
-WRAP="$HOME/.local/bin/${name}"
-printf %s '${wrapperB64}' | base64 -d | sed -e "s|@BIN@|$HBIN|" > "$WRAP" && chmod 755 "$WRAP" || fail "Could not write the harness wrapper." 1
-mkdir -p "$HOME/.config/sparkdash"
-( umask 077; printf '%s\\n' "$WRAP" > "${HOST_CMD_FILE}" ) || fail "Could not save the harness command." 1
-step "harness command: $WRAP (runs $HBIN)"`;
-}
-
 /**
  * Install VulnHunter on the unit: the pinned revision is fetched by hash into ~/.local/share/sparkdash/VulnHunter,
  * the `vulnhunt` skill is copied into the harness's skills directory (and the agent definition into its agents
@@ -458,7 +438,7 @@ step "harness command: $WRAP (runs $HBIN)"`;
  * purpose: besides the same copying it builds a virtualenv from PyPI for the fix skill, which a scan does not need.
  * Output streams like any job; the exit marker carries the result.
  */
-export function buildInstallProgram({ skillsDir, agentsDir = "", nonce = "", repo = VULNHUNTER_REPO, rev = VULNHUNTER_REV, protocol = "https", harness = null }) {
+export function buildInstallProgram({ skillsDir, agentsDir = "", nonce = "", repo = VULNHUNTER_REPO, rev = VULNHUNTER_REV, protocol = "https" }) {
   const TX = exitToken(nonce);
   // These are interpolated into the program text: constants of this module, or a local test fixture.
   if (!/^[0-9a-f]{40}$/.test(rev)) throw new Error("invalid revision");
@@ -468,7 +448,6 @@ export function buildInstallProgram({ skillsDir, agentsDir = "", nonce = "", rep
   return wrap(`
 umask 022
 ${PATH_LINE}
-export PATH="$HOME/.opencode/bin:$HOME/.bun/bin:$PATH"
 fail() { echo "[sparkdash] $1"; echo "${TX}$2"; exit 0; }
 step() { echo "[sparkdash] $1"; }
 SK_RAW=$(printf %s '${b64(skillsDir)}' | base64 -d)
@@ -524,7 +503,6 @@ printf %s '${LAUNCHER_B64}' | base64 -d | sed -e "s|@REPO@|$REPO|" -e "s|@PY@|$P
 chmod +x "$BIN/vh"
 "$BIN/vh" --help >/dev/null 2>&1 || fail "The vh launcher does not run (python modules missing?)." 1
 
-${harness ? harnessSetup(harness) : ""}
 mkdir -p "$(dirname "${INSTALL_RECORD}")"
 { printf 'REV=%s\n' "${rev}"; printf 'SKILLS_DIR=%s\n' "$SK"; [ -z "$AG" ] || printf 'AGENTS_DIR=%s\n' "$AG"; } > "${INSTALL_RECORD}"
 step "installed: vh at $BIN/vh, skill at $SK/vulnhunt"

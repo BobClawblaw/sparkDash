@@ -316,17 +316,3 @@ test("VulnHunter over HTTP: install and harness-command endpoints are gated, val
   assert.equal((await api(port, `${base}/host-command`, { method: "DELETE" })).body.success, true);
   assert.equal((await api(port, `${base}/status`)).body.hostCommand.configured, false);
 });
-
-test("VulnHunter over HTTP: one-click install takes only a preset id", async (t) => {
-  const { port } = await startServer(t);
-  await addLocalSpark(port);
-  const base = "/api/sparks/alpha/vulnhunt";
-  const post = (body) => api(port, `${base}/install`, { method: "POST", body: JSON.stringify(body) });
-  const unknown = await post({ harness: "rm -rf /" });
-  assert.equal(unknown.status, 400);
-  assert.match(unknown.body.error, /Unknown harness/);
-  assert.equal((await post({ harness: 5 })).status, 400);
-  const status = await api(port, `${base}/status`);
-  assert.deepEqual(status.body.install.harnesses.map((h) => h.id), ["claude", "codex", "opencode"]);
-  assert.ok(status.body.install.harnesses.every((h) => typeof h.found === "boolean" && typeof h.roEnforced === "boolean"));
-});

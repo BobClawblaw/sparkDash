@@ -439,17 +439,12 @@ The last 30 runs per unit are kept in `config/quality-bench-history.json`, with 
 
 VulnHunter is an agentic tool: the hunt itself is done by an agent harness and model that **you** provide on the unit (a local open-weight model served from the Spark works).
 
-**Setup, one click** (nothing to type in a terminal): on the VulnHunter page pick the unit and press **Set up with …** next to the agent harness found on it (Claude Code, Codex CLI or OpenCode). That one click:
+**Setup, from the page** (nothing to type in a terminal):
 
-1. turns VulnHunter on (it is an opt-in setting, see Safety),
-2. fetches the pinned VulnHunter revision by commit hash into `~/.local/share/sparkdash/VulnHunter` on the unit, copies the `vulnhunt` skill into that harness's skills directory (`~/.claude/skills`, `~/.codex/skills` or `~/.config/opencode/skills`) and writes the `vh` launcher to `~/.local/bin`, and
-3. writes a small wrapper (`~/.local/bin/vulnhunt-<harness>`) that turns VulnHunter's "prompt file as the last argument" contract into the harness's headless call, and saves it as the harness command.
+1. **Install VulnHunter.** Pick the unit, choose where your harness keeps its skills (the directories of harnesses found on the unit are offered) and press **Install**. sparkDash fetches the pinned VulnHunter revision by commit hash into `~/.local/share/sparkdash/VulnHunter` on the unit, copies the `vulnhunt` skill into the skills directory you chose (and the agent definition into an agents directory, if you give one), and writes the `vh` launcher to `~/.local/bin`. It deliberately does not run upstream's `install.sh`: besides the same copying, that script builds a virtualenv from PyPI for the fix skill, which a scan does not need. The revision is pinned in the dashboard build; when a newer build pins another one the page offers **Update**. Needs `git`, `setsid` and Python 3.11+ on the unit, and GitHub reachable from it.
+2. **Set the harness command.** Enter the command that runs your harness headlessly (the prompt file path is appended as the last argument). It is saved on the unit in a file only its user can read (`~/.config/sparkdash/vulnhunt-host-cmd`), checked to start with a program that exists there, and never shown again: the page only shows the program's name. `VULNHUNT_HOST_CMD` in the unit user's environment works too.
 
-For Claude Code and Codex the wrapper enforces read-only scans with the CLI's own tool restrictions (no shell tool; Codex's workspace-write sandbox); scans that may execute code run without them. For OpenCode read-only is only requested in the prompt. The presets' flags were checked against each CLI's `--help`; whether a harness resolves `/vulnhunt` in headless mode is up to the harness. It deliberately does not run upstream's `install.sh`: besides the same copying, that script builds a virtualenv from PyPI for the fix skill, which a scan does not need. The revision is pinned in the dashboard build; a newer build offers **Update**. Needs `git`, `setsid` and Python 3.11+ on the unit, and GitHub reachable from it.
-
-**Another harness, or your own command**: under **Advanced** pick the skills directory by hand and enter any command that runs your harness headlessly (the prompt file path is appended as the last argument). It is saved on the unit in a file only its user can read (`~/.config/sparkdash/vulnhunt-host-cmd`), checked to start with a program that exists there, and never shown again: the page only shows the program's name. `VULNHUNT_HOST_CMD` in the unit user's environment works too. A "do it by hand" section shows the equivalent shell commands.
-
-**Easy runs**: paste a repository URL (or a path on the unit), tick the authorization box and press **Scan**; recent sources are one click away and any past run can be scanned again. Time limit, label and the execute-code option are under **Options**.
+Both steps (like scans) only work after you turn VulnHunter on (see Safety): they change what runs on the unit as its user. A collapsed "do it by hand" section on the page shows the equivalent shell commands.
 
 **What a scan does**: clone (`vh clone`, or a shallow clone of a checkout under the unit user's home) → `vh host` with the `/vulnhunt <checkout>` prompt, the same headless prompt VulnHunter's benchmark harness uses → find the new `*_VULNHUNT_RESULTS_*` folder → `vh write-manifest` / `validate-manifest`. The report is parsed into findings (id, title, CWE, severity, runtime, exploit-test result, measured impact) and the PoC / exploit-test file list. One time limit (default 4 h) covers the whole scan, clone included; a scan can be stopped from the page. When it ends the clone is deleted and only the results folder is kept on the unit (`~/.cache/sparkdash/vulnhunt/<run>/results`), with the run's files private to the unit's user. Deleting a run removes them. Needs `vh`, `git` and `setsid` on the unit.
 
@@ -462,8 +457,6 @@ For Claude Code and Codex the wrapper enforces read-only scans with the CLI's ow
 - **Process control.** Stop and the time limit signal the scan's whole session. A harness or helper that deliberately starts its own session escapes both. For the unit that runs the dashboard in a container, stopping the container may end a scan that was started from inside it; scans on remote units are unaffected.
 - **Output limits.** The log on the unit is trimmed when it passes 64 MiB, and the page keeps the most recent 2 MiB of it.
 - Private repositories: clone them on the unit first and scan the checkout path.
-
-The page credits and links the VulnHunter project (maintained by Neal Bridges, a fork of Capital One's VulnHunter, Apache-2.0).
 
 Runs are kept in `config/vulnhunt-runs.json` (up to 100) and `config/vulnhunt-results/` (both git-ignored); move them with `VULNHUNT_RUNS_PATH` and `VULNHUNT_RESULTS_DIR`. Linux units only.
 

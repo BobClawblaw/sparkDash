@@ -135,6 +135,5 @@ The lightning-bolt shape used in the sparkDash logo and favicon follows the "zap
 
 - [tool-eval-bench](https://github.com/SeraphimSerapis/tool-eval-bench) by SeraphimSerapis (MIT) is installed and run on your own Spark when you use Tool Eval Bench. Its scenario methodology is adapted from ToolCall-15 by stevibe (MIT), and it credits the Typed Decisions dataset from the LocalLLaMA organization (Apache 2.0).
 - [Hermes Agent](https://github.com/nousresearch/hermes-agent) by Nous Research is monitored and updated over SSH when you enable it.
-- [VulnHunter](https://github.com/nealbridges/VulnHunter) (Apache-2.0), maintained by Neal Bridges as a fork of [Capital One's VulnHunter](https://github.com/capitalone/VulnHunter), is installed and run on your own unit when you use the VulnHunter page. sparkDash fetches a pinned revision from GitHub and drives its `vh` CLI; none of its code is included in sparkDash.
 - The Instruction following category is inspired by IFEval (Zhou et al., Google). No IFEval code or data is included.
 - The health findings (thermal, low power, Xid, memory, link speed) were inspired by [spark-doctor](https://github.com/joeynyc/spark-doctor) by joeynyc (MIT). No code from it is included.

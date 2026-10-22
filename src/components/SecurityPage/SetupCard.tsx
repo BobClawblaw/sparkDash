@@ -5,7 +5,6 @@ import { Panel } from "../ui/Panel";
 import { Tag } from "../ui/Tag";
 import { HarnessStep } from "./HarnessStep";
 import { InstallStep } from "./InstallStep";
-import { QuickSetup } from "./QuickSetup";
 import { useVulnHuntHostCommand, useVulnHuntInstall } from "./hooks";
 import { CommandBlock, Notice } from "./parts";
 import { setupProblems, shortRev } from "./securityLogic";
@@ -19,8 +18,6 @@ interface SetupCardProps {
   loading: boolean;
   error: string | null;
   onRecheck: () => void;
-  /** Turns the VulnHunter opt-in on for the one-click setup. */
-  onEnableOptIn?: () => Promise<void>;
 }
 
 function Row({ ok, label, detail }: { ok: boolean; label: string; detail?: ReactNode }) {
@@ -40,8 +37,8 @@ function harnessDetail(status: VulnHuntStatus): string {
   return where;
 }
 
-/** What the unit has and what is still missing: the one-click setup first, and the manual install / harness-command steps under Advanced. */
-export function SetupCard({ sparkId, unitName, setup, setupError, status, loading, error, onRecheck, onEnableOptIn }: SetupCardProps) {
+/** What the unit has and what is still missing, with the guided install and harness-command steps when it is not ready. */
+export function SetupCard({ sparkId, unitName, setup, setupError, status, loading, error, onRecheck }: SetupCardProps) {
   const install = useVulnHuntInstall(sparkId, onRecheck);
   const hc = useVulnHuntHostCommand(sparkId, onRecheck);
   const recheck = (
@@ -103,49 +100,50 @@ export function SetupCard({ sparkId, unitName, setup, setupError, status, loadin
       ) : null;
     body = (
       <>
-        <QuickSetup unitName={unitName} setup={setup} setupError={setupError} status={status} install={install} onEnableOptIn={onEnableOptIn} />
-        <details className="sec-manual sec-advanced">
-          <summary>Advanced: install and harness command by hand</summary>
-          <div className="sec-stack">
-            <ul className="sec-checks" aria-label="Setup checklist">
-              <Row
-                ok={status.installed}
-                label="VulnHunter installed"
-                detail={
-                  status.installed
-                    ? [status.install.installedRev ? shortRev(status.install.installedRev) : null, outdated ? "update available" : null, status.path]
-                        .filter(Boolean)
-                        .join(" · ")
-                    : "not found"
-                }
-              />
-              <Row ok={py != null} label="Python 3.11 or newer" detail={py ?? "not found"} />
-              <Row ok={status.git} label="git available" />
-              <Row ok={status.setsid} label="setsid available" />
-              <Row
-                ok={status.hostCommand.configured}
-                label="Harness command configured"
-                detail={status.hostCommand.configured ? harnessDetail(status) : status.hostCommand.source === "unsafe" ? "file is not safe to use" : "not configured"}
-              />
+        <ul className="sec-checks" aria-label="Setup checklist">
+          <Row
+            ok={status.installed}
+            label="VulnHunter installed"
+            detail={
+              status.installed
+                ? [status.install.installedRev ? shortRev(status.install.installedRev) : null, outdated ? "update available" : null, status.path]
+                    .filter(Boolean)
+                    .join(" · ")
+                : "not found"
+            }
+          />
+          <Row ok={py != null} label="Python 3.11 or newer" detail={py ?? "not found"} />
+          <Row ok={status.git} label="git available" />
+          <Row ok={status.setsid} label="setsid available" />
+          <Row
+            ok={status.hostCommand.configured}
+            label="Harness command configured"
+            detail={status.hostCommand.configured ? harnessDetail(status) : status.hostCommand.source === "unsafe" ? "file is not safe to use" : "not configured"}
+          />
+        </ul>
+        {status.ready ? (
+          <p className="sec-muted">
+            Scans run on {unitName} as the user the dashboard connects with. The harness command is read on the unit and is never shown here.
+          </p>
+        ) : (
+          <Notice tone="warn" title="This unit is not ready to scan yet">
+            <ul className="sec-problems">
+              {problems.map((p) => (
+                <li key={p}>{p}</li>
+              ))}
             </ul>
-            {status.ready ? (
-              <p className="sec-muted">
-                Scans run on {unitName} as the user the dashboard connects with. The harness command is read on the unit and is never shown here.
-              </p>
-            ) : (
-              <Notice tone="warn" title="This unit is not ready to scan yet">
-                <ul className="sec-problems">
-                  {problems.map((p) => (
-                    <li key={p}>{p}</li>
-                  ))}
-                </ul>
-              </Notice>
-            )}
-            {showInstall ? <InstallStep unitName={unitName} setup={setup} setupError={setupError} status={status} install={install} /> : null}
+          </Notice>
+        )}
+        {showInstall ? <InstallStep unitName={unitName} setup={setup} setupError={setupError} status={status} install={install} /> : null}
+        {status.ready ? (
+          <details className="sec-manual">
+            <summary>Change the harness command</summary>
             <HarnessStep unitName={unitName} setup={setup} setupError={setupError} status={status} hc={hc} num={showInstall ? 2 : 1} />
-            {status.ready ? null : manual}
-          </div>
-        </details>
+          </details>
+        ) : (
+          <HarnessStep unitName={unitName} setup={setup} setupError={setupError} status={status} hc={hc} num={showInstall ? 2 : 1} />
+        )}
+        {status.ready ? null : manual}
       </>
     );
   }

@@ -2,7 +2,6 @@ import type {
   SparkSnapshot,
   VulnHuntCounts,
   VulnHuntFinding,
-  VulnHuntHarness,
   VulnHuntRun,
   VulnHuntRunStatus,
   VulnHuntScanRequest,
@@ -182,60 +181,6 @@ export function initialForm(limits: ScanLimits): ScanFormState {
 
 export const SOURCE_PLACEHOLDER = { url: "https://github.com/org/repo", path: "~/code/project" } as const;
 
-/** A value starting with / or ~ is a path on the unit; anything else is treated as a repository URL. */
-export function detectSourceType(raw: string): "url" | "path" {
-  const v = raw.trim();
-  return v.startsWith("/") || v === "~" || v.startsWith("~/") ? "path" : "url";
-}
-
-/** Distinct sources of earlier scans, newest first (at most `max`). */
-export function recentSources(runs: readonly Pick<VulnHuntRun, "source" | "startedAt">[] | null | undefined, max = 5): string[] {
-  if (!runs) return [];
-  const seen = new Set<string>();
-  const out: string[] = [];
-  for (const r of [...runs].sort((a, b) => b.startedAt - a.startedAt)) {
-    const v = r.source.value.trim();
-    if (!v || seen.has(v)) continue;
-    seen.add(v);
-    out.push(v);
-    if (out.length >= max) break;
-  }
-  return out;
-}
-
-/**
- * The harness this unit's saved command goes through: one whose wrapper is installed and whose id appears in the
- * program name, or the only one with a wrapper. Null when it cannot be told (a hand-written command, say).
- */
-export function activeHarness(
-  status: { hostCommand: { configured: boolean; program: string | null }; install?: { harnesses?: VulnHuntHarness[] } | null } | null | undefined
-): VulnHuntHarness | null {
-  if (!status || !status.hostCommand.configured) return null;
-  const wrapped = (status.install?.harnesses ?? []).filter((h) => h.wrapperInstalled);
-  const program = (status.hostCommand.program ?? "").toLowerCase();
-  const byName = wrapped.filter((h) => program.includes(h.id));
-  if (byName.length === 1) return byName[0];
-  if (!byName.length && wrapped.length === 1) return wrapped[0];
-  return null;
-}
-
-/** Plain-words problems with the unit that stop the one-click setup, in the order to fix them. */
-export function quickSetupProblems(status: { git: boolean; setsid: boolean; install: { python311: string | null } }): string[] {
-  const out: string[] = [];
-  if (status.install.python311 == null) out.push("Python 3.11 or newer is needed on this unit.");
-  if (!status.git) out.push("git is not installed on this unit.");
-  if (!status.setsid) out.push("The setsid command (util-linux) is not available on this unit.");
-  return out;
-}
-
-/** What a failed install's exit code means, for people who do not read shell. */
-export function installExitExplanation(code: number | null): string | null {
-  if (code === 127) {
-    return "The agent CLI, git or Python 3.11 is missing on the unit, so the setup could not run. The output above names the one it could not find.";
-  }
-  return null;
-}
-
 const LOCAL_PATH_RE = /^(~\/|\/)[A-Za-z0-9._@+=,/-]{1,400}$/;
 
 /**
@@ -281,7 +226,7 @@ export interface ScanFormCheck {
 export function checkScanForm(form: ScanFormState, limits: ScanLimits = FALLBACK_LIMITS): ScanFormCheck {
   const blockers: string[] = [];
   const value = form.value.trim();
-  if (!value) blockers.push("Enter a repository URL or the path of a checkout on the unit.");
+  if (!value) blockers.push(form.sourceType === "url" ? "Enter the repository URL." : "Enter the path of a checkout on the unit.");
   if (!form.authorized) blockers.push("Confirm that you are authorized to scan this code.");
   if (!form.readOnly && !form.confirmExecute) blockers.push("Confirm that the scan may execute code on this unit, or keep it read-only.");
 
