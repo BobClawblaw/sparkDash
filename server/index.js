@@ -65,9 +65,6 @@ import { LauncherManager } from "./llmlaunch/LauncherManager.js";
 import { ToolEvalStore } from "./tooleval/ToolEvalStore.js";
 import { ToolEvalManager } from "./tooleval/ToolEvalManager.js";
 import { registerToolEvalRoutes } from "./tooleval/routes.js";
-import { VulnHuntStore } from "./vulnhunt/VulnHuntStore.js";
-import { VulnHuntManager } from "./vulnhunt/VulnHuntManager.js";
-import { registerVulnHuntRoutes } from "./vulnhunt/routes.js";
 import { benchEvent } from "./events/eventFormat.js";
 import {
   createFleetEnergyRuntime,
@@ -394,17 +391,6 @@ const toolEvalManager = new ToolEvalManager({
 });
 const allowToolEval = createRateLimiter(30, 60_000);
 
-// ─── VulnHunter scans (vh + an agent harness on a unit) ──
-const vulnHuntStore = new VulnHuntStore({
-  file: process.env.VULNHUNT_RUNS_PATH || path.join(ROOT, "config", "vulnhunt-runs.json"),
-  resultsDir: process.env.VULNHUNT_RESULTS_DIR || path.join(ROOT, "config", "vulnhunt-results"),
-});
-const vulnHuntManager = new VulnHuntManager({
-  store: vulnHuntStore,
-  onEvent: (event) => recordEvent(event),
-});
-const allowVulnHunt = createRateLimiter(30, 60_000);
-
 // ─── Monitor map ─────────────────────────────────────────
 const monitors = new Map();
 
@@ -719,7 +705,6 @@ app.delete("/api/sparks/:id", (req, res) => {
     launcherStatusCache.delete(req.params.id);
     unitHistory.remove(req.params.id);
     toolEvalManager.removeSpark(req.params.id);
-    vulnHuntManager.removeSpark(req.params.id);
     recordEvent({
       type: "spark.removed",
       severity: "info",
@@ -832,16 +817,6 @@ registerToolEvalRoutes(app, {
   allowRun: allowToolEval,
   principalKey,
   rejectLimited,
-});
-
-registerVulnHuntRoutes(app, {
-  registry,
-  manager: vulnHuntManager,
-  store: vulnHuntStore,
-  allowRun: allowVulnHunt,
-  principalKey,
-  rejectLimited,
-  bindHost: BIND_HOST,
 });
 
 // ─── LLM launchers: register a directory with start.sh / stop.sh and run it ───
@@ -2427,7 +2402,6 @@ async function shutdown(signal) {
   try {
     launcherManager.shutdown();
     toolEvalManager.shutdown();
-    vulnHuntManager.shutdown();
   } catch (err) {
     console.error("[sparkDash] failed to stop launcher watchers:", err.message);
   }

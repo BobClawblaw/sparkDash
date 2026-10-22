@@ -42,8 +42,6 @@ config/events.json
 config/llm-launchers.json
 config/tool-eval-runs.json
 config/tool-eval-results/
-config/vulnhunt-runs.json
-config/vulnhunt-results/
 config/gpu-history.json
 config/gpu-history-long.json
 config/metrics-history.json

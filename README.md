@@ -43,7 +43,6 @@ Monitored units run **Linux**, **macOS**, or **Windows** (a Windows PC with an N
 - [Mobile PWA (install on a phone)](#mobile-pwa-install-on-a-phone)
 - [Glance integration](#glance-integration)
 - [Quality bench](#quality-bench)
-- [Security scans (VulnHunter)](#security-scans-vulnhunter)
 - [Prometheus](#prometheus)
 - [Alert notifications](#alert-notifications)
 - [RoCE / RDMA monitoring](#roce--rdma-monitoring)
@@ -138,7 +137,6 @@ Full history: [CHANGELOG.md](./CHANGELOG.md)
 | **Decode benchmark** | Multi-concurrency streaming decode tok/s; type picker (Structured / Prose / Code / JSON). Code is a different Python task per stream. Lab protocol (temp 0, thinking off); persisted last run. Remote units: LAN HTTP, or SSH tunnel to loopback. **Remote** button for an on-demand HTTPS/host:port target |
 | **Prefill benchmark** | Context-size sweep (1k–300k) of prefill tok/s and TTFT; unique prefix per size; persisted last run. Same remote targeting as decode |
 | **Quality benchmark** | Fixed, seeded quality suite (QA, reasoning, arithmetic, state tracking, GSM8K, MMLU, plus optional instruction following and long-context recall) at temperature 0; per-category and overall score; last 30 runs kept; paired compare with McNemar p-value. Same remote targeting as decode |
-| **Security scans** | **Benchmarks → VulnHunter**: install and run [VulnHunter](https://github.com/nealbridges/VulnHunter), an agentic source-code security scanner, on a unit against a git URL or a checkout there. Detached on the unit, live output, parsed report (findings, severity, CWE, exploit-test status), history. Opt-in setup on the unit; see [Security scans](#security-scans-vulnhunter) |
 | **Prompt Showcase** | Full-page multi-terminal LLM streaming demo (up to 32 prompts) with live tok/s and copy-out |
 | **LLM inference health** | KV cache free/pool (vLLM `cache_config_info` token and byte size; usage % when the pool size is absent), run/wait queue, TTFT/E2E/ITL p95, preemptions, prefix cache, MTP accept from Prometheus `/metrics` (vLLM and q27; q27 FIFO-queues so the Requests tile reads “N run” without a wait gauge) |
 | **Multiple LLM ports** | Monitor several LLM servers on different ports simultaneously — each gets its own panel with independent backend detection and metrics |
@@ -432,33 +430,6 @@ The last 30 runs per unit are kept in `config/quality-bench-history.json`, with 
 <sub>Quality bench by Mia's AI Lab.</sub>
 
 ---
-
-## Security scans (VulnHunter)
-
-**Benchmarks → VulnHunter** runs [VulnHunter](https://github.com/nealbridges/VulnHunter) (Apache-2.0, a maintained fork of Capital One's scanner) on one of your units and shows what it found. sparkDash drives VulnHunter's own `vh` operator CLI the same way Tool Eval drives `tool-eval-bench`: the scan runs **detached on the unit** (closing the browser or restarting sparkDash does not stop it), its output is streamed, and the finished report is cached here so history stays readable while the unit is off.
-
-VulnHunter is an agentic tool: the hunt itself is done by an agent harness and model that **you** provide on the unit (a local open-weight model served from the Spark works).
-
-**Setup, from the page** (nothing to type in a terminal):
-
-1. **Install VulnHunter.** Pick the unit, choose where your harness keeps its skills (the directories of harnesses found on the unit are offered) and press **Install**. sparkDash fetches the pinned VulnHunter revision by commit hash into `~/.local/share/sparkdash/VulnHunter` on the unit, copies the `vulnhunt` skill into the skills directory you chose (and the agent definition into an agents directory, if you give one), and writes the `vh` launcher to `~/.local/bin`. It deliberately does not run upstream's `install.sh`: besides the same copying, that script builds a virtualenv from PyPI for the fix skill, which a scan does not need. The revision is pinned in the dashboard build; when a newer build pins another one the page offers **Update**. Needs `git`, `setsid` and Python 3.11+ on the unit, and GitHub reachable from it.
-2. **Set the harness command.** Enter the command that runs your harness headlessly (the prompt file path is appended as the last argument). It is saved on the unit in a file only its user can read (`~/.config/sparkdash/vulnhunt-host-cmd`), checked to start with a program that exists there, and never shown again: the page only shows the program's name. `VULNHUNT_HOST_CMD` in the unit user's environment works too.
-
-Both steps need the same gate as starting a scan (see Safety): they change what runs on the unit as its user. A collapsed "do it by hand" section on the page shows the equivalent shell commands.
-
-**What a scan does**: clone (`vh clone`, or a shallow clone of a checkout under the unit user's home) → `vh host` with the `/vulnhunt <checkout>` prompt, the same headless prompt VulnHunter's benchmark harness uses → find the new `*_VULNHUNT_RESULTS_*` folder → `vh write-manifest` / `validate-manifest`. The report is parsed into findings (id, title, CWE, severity, runtime, exploit-test result, measured impact) and the PoC / exploit-test file list. One time limit (default 4 h) covers the whole scan, clone included; a scan can be stopped from the page. When it ends the clone is deleted and only the results folder is kept on the unit (`~/.cache/sparkdash/vulnhunt/<run>/results`), with the run's files private to the unit's user. Deleting a run removes them. Needs `vh`, `git` and `setsid` on the unit.
-
-**Safety, and what it does not promise**
-- **Who can start a scan, install, or set the harness command.** These run code on your unit as its SSH user (a scan an agent, installing a skill and `vh`, the harness command whatever you enter), so they are refused on an open network bind: it needs `SPARKDASH_TOKEN`, or a dashboard bound to loopback. A loopback bind is not authentication: every user and process on the machine that runs sparkDash can reach it, so on a shared machine set `SPARKDASH_TOKEN`. `VULNHUNT_ALLOWED_HOSTS` (comma-separated host names, no ports; `*.example.org` allowed) pins the hosts a scan may clone from; empty means any host the policy below allows, and path sources are not subject to it.
-- **Authorization.** VulnHunter performs dual-use security work. Every scan needs an explicit "I am authorized to scan this code" confirmation, and the time and the requester's address (the client IP, or the token principal) are kept on the run record.
-- **Read-only is a request, not a sandbox.** The default prompt tells the harness not to fetch dependencies or execute code. A repository (or the agent's own output) can try to steer the agent, so if you need a guarantee run the harness in a container or under a user that cannot reach anything you care about. Allowing execution is a separate, explicitly confirmed choice, because exploit tests then run on the unit. The harness is started inside the clone, so project-level config a repository ships (hooks, MCP servers, agent instruction files) is visible to harnesses that read it from the working directory.
-- **Sources.** `https://` git URLs (no credentials) or paths under the unit user's home. Names and addresses of cloud metadata services (`metadata`, `metadata.google.internal`, `169.254.169.254`, `100.100.100.200`, `fd00:ec2::254`, …) are refused, including IPv6 forms that embed them; private, loopback and tailnet hosts are allowed because self-hosted git servers are the common case. This is a best-effort policy: a DNS name can still resolve anywhere, so pin hosts with `VULNHUNT_ALLOWED_HOSTS` when that matters. The clone ignores the user's global git config (credential helpers, `insteadOf`), follows no HTTP redirect, runs no hooks and fetches no LFS objects. On the Spark that runs sparkDash, scans run as the SSH user, never as root.
-- **Reports are untrusted.** The report is agent-written text derived from untrusted code: it is shown as plain text, never rendered as HTML. A results folder that came with the repository, a symlinked results folder or a README that is a symlink is not accepted as a result.
-- **Process control.** Stop and the time limit signal the scan's whole session. A harness or helper that deliberately starts its own session escapes both. For the unit that runs the dashboard in a container, stopping the container may end a scan that was started from inside it; scans on remote units are unaffected.
-- **Output limits.** The log on the unit is trimmed when it passes 64 MiB, and the page keeps the most recent 2 MiB of it.
-- Private repositories: clone them on the unit first and scan the checkout path.
-
-Runs are kept in `config/vulnhunt-runs.json` (up to 100) and `config/vulnhunt-results/` (both git-ignored); move them with `VULNHUNT_RUNS_PATH` and `VULNHUNT_RESULTS_DIR`. Linux units only.
 
 ## Prometheus
 
@@ -816,7 +787,7 @@ sparkDash/
 │   ├── health/          HealthEvaluator (findings)
 │   ├── energy/          Fleet energy tracker + monthly archive
 │   ├── llmtokens/       Token ledger · events/ Activity log · metrics/ Unit history (GPU chart, Temps week, 48 h / 30 d tiers)
-│   ├── llmlaunch/       Model launchers · tooleval/ Tool Eval Bench · vulnhunt/ VulnHunter scans
+│   ├── llmlaunch/       Model launchers · tooleval/ Tool Eval Bench
 │   ├── secretsStore.js  Encrypted password persistence
 │   └── validate.js      Host/user validation (SSRF-minded)
 ├── config/              Runtime state (volume; secrets gitignored)
@@ -858,7 +829,6 @@ sparkDash/
 | GET | `/api/events` | Fleet event log (`limit`, `sparkId`, `sinceId`, `beforeId`; 2000 kept) |
 | GET/POST/PUT/DELETE | `/api/sparks/:id/llm-launchers[/:lid]` | Registered start.sh / stop.sh model launchers; `POST …/:lid/start` and `…/stop` run them, `GET …/jobs/:jobId` streams the shell output |
 | GET/POST/DELETE | `/api/sparks/:id/tool-eval/…` | Tool Eval Bench on a Spark: `status`, `install`, `preview`, `probe`, `runs` (start / list / stream / attach / stop / refresh / `result` / delete); `GET /api/tool-eval/spec` serves the option spec |
-| GET/POST/DELETE | `/api/sparks/:id/vulnhunt/…` | VulnHunter scans on a unit: `status`, `runs` (start / list / stream / attach / stop / refresh / `report` / delete); `GET /api/vulnhunt/setup` serves the setup steps |
 | POST | `/api/sparks/test` | Ephemeral SSH + LLM (+ Comfy if enabled) test (no persist) |
 | POST | `/api/sparks/:id/test` | Connectivity test (can save password) |
 | POST | `/api/sparks/:id/comfy/cancel` | Cancel ComfyUI job by `promptId` |
@@ -942,8 +912,6 @@ Copy `.env.example` to `.env` if needed:
 | `SPARKDASH_TOKEN` | _(empty)_ | Bearer token. When set, it is required for every mutation and WebSocket connection, and for REST reads on a non-loopback bind. The browser prompts for it when needed (Settings → Access token to change it). |
 | `SPARKDASH_ALLOW_OPEN_REMOTE` | `1` | Unset, empty, or `1`: a non-loopback bind without `SPARKDASH_TOKEN` stays open. `0`: refuse to start without a token (fail closed). |
 | `SPARKDASH_ALLOWED_HOSTS` | _(empty)_ | Only for a reverse proxy on a custom domain: comma-separated names a loopback bind should also answer to. `localhost`, IP addresses, this machine's hostname and its Tailscale name work without it. |
-| `VULNHUNT_ALLOWED_HOSTS` | _(empty)_ | Security scans: comma-separated host names, no ports (`*.example.org` allowed), a scan may clone from. Empty allows any host the clone policy permits. |
-| `VULNHUNT_RUNS_PATH` / `VULNHUNT_RESULTS_DIR` | `config/vulnhunt-runs.json` / `config/vulnhunt-results` | Where Security scan history and cached reports are kept. |
 | `PORT` | `5555` | HTTP + WebSocket listen port |
 | `LLM_PORT` | `8888` | Default LLM probe port |
 | `COMFY_PORT` | `8188` | Default ComfyUI probe port |
@@ -1211,7 +1179,6 @@ The [`sparkdash-dgx-cluster`](https://github.com/glanceapp/community-widgets/tre
 **Projects and data sparkDash builds on**
 - [tool-eval-bench](https://github.com/SeraphimSerapis/tool-eval-bench) by SeraphimSerapis (MIT) powers **Tool Eval Bench**. It adapts the scenario methodology of ToolCall-15 by stevibe (MIT) and credits the Typed Decisions dataset from the LocalLLaMA organization (Apache 2.0).
 - **GSM8K** (OpenAI, MIT) and **MMLU** (Dan Hendrycks, MIT) supply the maths and knowledge questions in the Quality bench. The instruction-following category is inspired by **IFEval** (Zhou et al., Google).
-- [VulnHunter](https://github.com/nealbridges/VulnHunter) (Apache-2.0; a maintained fork of [Capital One's VulnHunter](https://github.com/capitalone/VulnHunter)) is the scanner behind **Security scans**. sparkDash only calls its `vh` CLI on your unit; no VulnHunter code is bundled.
 - [Hermes Agent](https://github.com/nousresearch/hermes-agent) by Nous Research can be monitored and updated from sparkDash.
 - The health findings were inspired by [spark-doctor](https://github.com/joeynyc/spark-doctor) by joeynyc (MIT). No code from it is used.
 - Fonts: [Geist and Geist Mono](https://github.com/vercel/geist-font) by Vercel (SIL Open Font License 1.1). The bolt in the logo follows the "zap" icon from [Feather](https://github.com/feathericons/feather) (MIT).

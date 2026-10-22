@@ -4,16 +4,6 @@ import type {
   AlertsConfig,
   AlertsConfigUpdate,
   AlertsResponse,
-  VulnHuntInstallRequest,
-  VulnHuntInstallStarted,
-  VulnHuntInstallStream,
-  VulnHuntJob,
-  VulnHuntReportBundle,
-  VulnHuntRun,
-  VulnHuntScanRequest,
-  VulnHuntSetup,
-  VulnHuntStatus,
-  VulnHuntStreamRead,
   ActivityEvent,
   ActivityEventsPage,
   EnergyHistory,
@@ -52,7 +42,6 @@ import type {
   QualityBenchListResponse,
   StartQualityBenchRequest,
 } from "./types";
-import { VulnHuntApiError } from "./types";
 import { authHeaders, reportAuthRequired } from "./authToken";
 
 const BASE = "";
@@ -855,107 +844,6 @@ export function getGpuHistory(sparkId: string, windowMs: number): Promise<GpuHis
   return apiFetch<GpuHistoryResponse>(`/api/sparks/${encodeURIComponent(sparkId)}/gpu-history?windowMs=${Math.round(windowMs)}`);
 }
 
-// ─── Security scans (VulnHunter) ─────────────────────────
-const vhBase = (sparkId: string) => `/api/sparks/${encodeURIComponent(sparkId)}/vulnhunt`;
-const vhRun = (sparkId: string, runId: string) => `${vhBase(sparkId)}/runs/${encodeURIComponent(runId)}`;
-
-/** Like apiFetch, but keeps the status code, a busy job (409) and the `canForce` flag of a failed response. */
-async function vhFetch<T>(path: string, opts?: RequestInit): Promise<T> {
-  const headers: Record<string, string> = {};
-  if (opts?.body) headers["Content-Type"] = "application/json";
-  const res = await fetch(`${BASE}${path}`, { ...opts, headers: { ...headers, ...authHeaders() } });
-  if (!res.ok) {
-    if (res.status === 401) reportAuthRequired();
-    const body = await res.json().catch(() => ({}) as Record<string, unknown>);
-    const active = body.active && typeof body.active === "object" ? (body.active as Partial<VulnHuntJob>) : null;
-    throw new VulnHuntApiError(
-      (typeof body.error === "string" && body.error) || res.statusText || `HTTP ${res.status}`,
-      res.status,
-      active,
-      body.canForce === true
-    );
-  }
-  return res.json();
-}
-
-export function fetchVulnHuntSetup(): Promise<VulnHuntSetup> {
-  return vhFetch("/api/vulnhunt/setup");
-}
-
-export function fetchVulnHuntStatus(sparkId: string): Promise<VulnHuntStatus> {
-  return vhFetch(`${vhBase(sparkId)}/status`);
-}
-
-export function listVulnHuntRuns(sparkId: string): Promise<{ runs: VulnHuntRun[]; active: VulnHuntJob | null }> {
-  return vhFetch(`${vhBase(sparkId)}/runs`);
-}
-
-export function startVulnHuntScan(sparkId: string, req: VulnHuntScanRequest): Promise<{ run: VulnHuntRun; job: VulnHuntJob }> {
-  return vhFetch(`${vhBase(sparkId)}/runs`, { method: "POST", body: JSON.stringify(req) });
-}
-
-export function readVulnHuntStream(sparkId: string, runId: string, lineSince = 0): Promise<VulnHuntStreamRead> {
-  return vhFetch(`${vhRun(sparkId, runId)}/stream?lineSince=${lineSince}`);
-}
-
-export function fetchVulnHuntReport(sparkId: string, runId: string): Promise<{ run: VulnHuntRun | null; report: VulnHuntReportBundle }> {
-  return vhFetch(`${vhRun(sparkId, runId)}/report`);
-}
-
-export function attachVulnHuntScan(sparkId: string, runId: string): Promise<{ job: VulnHuntJob }> {
-  return vhFetch(`${vhRun(sparkId, runId)}/attach`, { method: "POST", body: "{}" });
-}
-
-/** Rejects when the unit did not stop the scan (the server answers 200 with `success: false` then). */
-export async function stopVulnHuntScan(sparkId: string, runId: string): Promise<{ success: boolean; output?: string }> {
-  const res = await vhFetch<{ success: boolean; output?: string }>(`${vhRun(sparkId, runId)}/stop`, { method: "POST", body: "{}" });
-  if (!res.success) {
-    const why = (res.output ?? "").trim();
-    throw new Error(why === "not running" ? "The scan is not running on the unit any more." : why ? `The unit did not stop the scan: ${why.slice(0, 200)}` : "The unit did not stop the scan.");
-  }
-  return res;
-}
-
-export function refreshVulnHuntScan(
-  sparkId: string,
-  runId: string
-): Promise<{ state: { state: "running" | "gone" | "finished" | "unknown"; exitCode?: number }; run: VulnHuntRun | null }> {
-  return vhFetch(`${vhRun(sparkId, runId)}/refresh`, { method: "POST", body: "{}" });
-}
-
-/** `force` deletes a scan whose state the server could not confirm (after a 409 with `canForce`). */
-export function deleteVulnHuntScan(sparkId: string, runId: string, force = false): Promise<{ success: boolean }> {
-  return vhFetch(`${vhRun(sparkId, runId)}${force ? "?force=1" : ""}`, { method: "DELETE" });
-}
-
-/** Stop watching the live job; a scan keeps going on the unit. */
-/** Install (or update) VulnHunter on the unit. 400/403/409 come back as VulnHuntApiError with the server's message. */
-export function installVulnHunt(sparkId: string, req: VulnHuntInstallRequest): Promise<VulnHuntInstallStarted> {
-  return vhFetch(`${vhBase(sparkId)}/install`, { method: "POST", body: JSON.stringify(req) });
-}
-
-/** The latest install job and its output since `lineSince`; null when no install has run since the dashboard started. */
-export async function readVulnHuntInstallStream(sparkId: string, lineSince = 0): Promise<VulnHuntInstallStream | null> {
-  try {
-    return await vhFetch<VulnHuntInstallStream>(`${vhBase(sparkId)}/install/stream?lineSince=${lineSince}`);
-  } catch (e) {
-    if (e instanceof VulnHuntApiError && e.status === 404) return null;
-    throw e;
-  }
-}
-
-/** Save the harness command on the unit. Write-only: the dashboard never reads it back. */
-export function saveVulnHuntHostCommand(sparkId: string, command: string): Promise<{ success: boolean }> {
-  return vhFetch(`${vhBase(sparkId)}/host-command`, { method: "PUT", body: JSON.stringify({ command }) });
-}
-
-export function clearVulnHuntHostCommand(sparkId: string): Promise<{ success: boolean }> {
-  return vhFetch(`${vhBase(sparkId)}/host-command`, { method: "DELETE" });
-}
-
-export function cancelVulnHuntWatch(sparkId: string): Promise<{ success: boolean }> {
-  return vhFetch(`${vhBase(sparkId)}/watch`, { method: "DELETE" });
-}
 /** The 48 h / 30 d unit history (Settings → Metrics history; `{ enabled: false }` while off). */
 export function getUnitHistory(sparkId: string, range: MetricsHistoryRange): Promise<MetricsHistoryResponse> {
   return apiFetch<MetricsHistoryResponse>(`/api/sparks/${encodeURIComponent(sparkId)}/history?range=${range}`);

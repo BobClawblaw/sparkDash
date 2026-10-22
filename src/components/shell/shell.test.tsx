@@ -238,7 +238,7 @@ describe("MobileTabBar sheet", () => {
     expect(document.activeElement).toBe(opener);
   });
 
-  it("Stats opens Token totals, Fleet energy, Temps and Activity; VulnHunter sits under Benchmarks; Sparks no longer lists them; Showcase follows Prefill", () => {
+  it("Stats opens Token totals, Fleet energy, Temps and Activity; Sparks no longer lists them; Showcase follows Prefill", () => {
     const { container } = render(
       <MobileTabBar sparks={[makeSpark("a")]} activeId={null} onSelect={() => {}} onAdd={() => {}} onOpenSettings={() => {}} />
     );
@@ -256,7 +256,6 @@ describe("MobileTabBar sheet", () => {
     expect(names).not.toContain("Token totals");
     expect(names).not.toContain("Fleet energy");
     expect(names).not.toContain("Activity");
-    expect(names).toContain("VulnHunter");
     expect(names.indexOf("Showcase")).toBe(names.indexOf("Prefill") + 1);
   });
 });

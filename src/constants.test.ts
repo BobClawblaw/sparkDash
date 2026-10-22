@@ -13,22 +13,11 @@ describe("route helpers", () => {
     expect(pathToId("/nothing-here")).toBe(OVERVIEW_ID);
   });
 
-  it("VulnHunter is a benchmark page; the old /security link lands on it", () => {
-    expect(idToPath(benchId("vulnhunt"))).toBe("/bench/vulnhunt");
-    expect(pathToId("/bench/vulnhunt")).toBe(benchId("vulnhunt"));
-    expect(pathToId("/security")).toBe(benchId("vulnhunt"));
-    expect(pathToId("/security/")).toBe(benchId("vulnhunt"));
-    expect(isPageId(benchId("vulnhunt"))).toBe(true);
-    expect(isStaleSparkId(benchId("vulnhunt"), [], true)).toBe(false);
-  });
-
   describe("initialActiveId", () => {
     afterEach(() => vi.unstubAllGlobals());
     it("reads the deep link synchronously, so /energy never starts on the Overview", () => {
       vi.stubGlobal("location", { pathname: "/energy" });
       expect(initialActiveId()).toBe(ENERGY_ID);
-      vi.stubGlobal("location", { pathname: "/security" });
-      expect(initialActiveId()).toBe(benchId("vulnhunt"));
       vi.stubGlobal("location", { pathname: "/spark/alpha" });
       expect(initialActiveId()).toBe("alpha");
     });

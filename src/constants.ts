@@ -50,8 +50,6 @@ export function pathToId(pathname: string): string | null {
   for (const [id, p] of Object.entries(FIXED_PATHS)) {
     if (p !== "/" && (pathname === p || pathname === `${p}/`)) return id;
   }
-  // The page was briefly a top-level /security route; old links land on the benchmark page.
-  if (pathname === "/security" || pathname === "/security/") return benchId("vulnhunt");
   const bench = pathname.match(/^\/bench\/([a-z0-9-]+)\/?$/);
   if (bench) return benchId(bench[1]);
   const spark = pathname.match(/^\/spark\/([^/]+)/);
