@@ -10,6 +10,7 @@ Format: version sections are listed newest first.
 ## [Unreleased]
 
 ### Fixed
+- **TensorFold per-stream decode and effective prefill rates** use completion-window counters with noise guards and a bounded prefill hold. Effective rates include cache credit and have no GB10-specific upper cap. Thanks to @EagleClaw89 (#252).
 - **Remote probes survive unmatched patterns under zsh.** CPU, storage, network, Intel GPU, RoCE and model-file enumeration use scoped, sorted find calls; shell-specific fixtures skip when zsh is absent. Thanks to @EugeneClaw (#257, fixes #255).
 - **TensorFold Prometheus latency, cache and KV metrics** are populated when measured; incomplete or invalid latency histograms remain unavailable. Thanks to @eXsoR65 (#260).
 - **macOS storage reports the APFS container and aggregate disk I/O.** Shared free space includes snapshots/other volume allocations, existing root-device toggles keep working, and missing optional I/O statistics do not discard capacity. Thanks to @eXsoR65 (#259).

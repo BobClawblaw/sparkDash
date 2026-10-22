@@ -136,6 +136,31 @@ export class LlmProbe {
     this._tensorfoldLastPrefill = null;
     /** Previous TensorFold /metrics `generation_tokens_total + generation_tokens_running`. */
     this._tensorfoldPromProduced = null;
+    /**
+     * Average decode tok/s of ONE stream (TensorFold): 1 / mean seconds per
+     * output token over the last poll window, from the server's own TPOT
+     * histogram. null when the backend reports no such histogram; held (not
+     * zeroed) across a window in which no request finished, because the
+     * histogram only updates on completion.
+     */
+    this.perStreamTps = null;
+    /** Previous `tensorfold:request_time_per_output_token_seconds` _count / _sum. */
+    this._tensorfoldTpotCount = null;
+    this._tensorfoldTpotSum = null;
+    /**
+     * Effective prefill tok/s of ONE request (TensorFold /metrics-only builds):
+     * Δprompt_tokens_total / Δprefill-seconds over finished requests. Labeled
+     * "effective" because prompt_tokens_total includes prefix-cache hits and
+     * the engine exposes no cached counter on /metrics. null until a request
+     * with prefill time has finished; held (not zeroed) between completions.
+     */
+    this.perStreamPrefillTps = null;
+    /** When the last SANITY-PASSING prefill measurement was taken (hold expires after 20 s). */
+    this._tensorfoldPrefillMeasuredAt = null;
+    /** Previous prompt_tokens_total / prefill histogram _sum / _count for the /metrics prefill window. */
+    this._tensorfoldPromptTokens = null;
+    this._tensorfoldPrefillSum = null;
+    this._tensorfoldPrefillCount = null;
     this.prefillActive = false;
     /** Previous prefill counters by kind; null until first labeled sample. */
     this.lastPrefillKinds = null;
@@ -435,6 +460,14 @@ export class LlmProbe {
     this._tensorfoldPrevCached = null;
     this._tensorfoldLastPrefill = null;
     this._tensorfoldPromProduced = null;
+    this.perStreamTps = null;
+    this._tensorfoldTpotCount = null;
+    this._tensorfoldTpotSum = null;
+    this.perStreamPrefillTps = null;
+    this._tensorfoldPrefillMeasuredAt = null;
+    this._tensorfoldPromptTokens = null;
+    this._tensorfoldPrefillSum = null;
+    this._tensorfoldPrefillCount = null;
     this.prefillActive = false;
     this.lastPrefillKinds = null;
     this.lastTtftSum = null;
@@ -1754,12 +1787,18 @@ export class LlmProbe {
         this.generationTps = Math.max(0, Math.round(((produced - prev) / dtSec) * 100) / 100);
       }
     }
-    const running = queueOnly ? null : m("requests_running");
+    // One source of truth for the concurrency count. TensorFold exports both
+    // `requests_running` and the vLLM-style alias `num_requests_running` with
+    // identical values (verified live); read the canonical name and fall back
+    // to the alias only when the canonical series is absent. Never sum them.
+    let running = queueOnly ? null : m("requests_running");
+    if ((!Number.isFinite(running) || running < 0) && !queueOnly) running = m("num_requests_running");
     if (Number.isFinite(running) && running >= 0) {
       this.requestsRunning = Math.round(running);
       this.slotsActive = Math.round(running);
     }
-    const waiting = m("requests_waiting");
+    let waiting = m("requests_waiting");
+    if (!Number.isFinite(waiting) || waiting < 0) waiting = m("num_requests_waiting");
     if (Number.isFinite(waiting) && waiting >= 0) this.requestsWaiting = Math.round(waiting);
 
     if (!queueOnly) {
@@ -1813,6 +1852,124 @@ export class LlmProbe {
     const accepted = queueOnly ? null : m("mtp_accepted_total");
     if (Number.isFinite(drafted) && drafted > 0 && Number.isFinite(accepted)) {
       this.mtpAcceptanceRate = Math.max(0, Math.min(1, accepted / drafted));
+    }
+    // Per-stream decode rate from the server's own time-per-output-token
+    // histogram: 1 / mean over the tokens finished since the last poll. The
+    // histogram only moves when a request finishes, so with no finished
+    // request in this window the previous value is held rather than flashed
+    // to 0; with no histogram at all, fall back to aggregate / active streams.
+    if (!queueOnly) {
+      const tpotCount = m("request_time_per_output_token_seconds_count");
+      const tpotSum = m("request_time_per_output_token_seconds_sum");
+      if (Number.isFinite(tpotCount) && Number.isFinite(tpotSum) && tpotCount >= 0 && tpotSum >= 0) {
+        if (
+          this._tensorfoldTpotCount != null &&
+          this._tensorfoldTpotSum != null &&
+          tpotCount >= this._tensorfoldTpotCount
+        ) {
+          const dCount = tpotCount - this._tensorfoldTpotCount;
+          const dSum = tpotSum - this._tensorfoldTpotSum;
+          if (dCount > 0 && dSum > 0) {
+            this.perStreamTps = Math.max(0, Math.round((dCount / dSum) * 100) / 100);
+          }
+        }
+        this._tensorfoldTpotCount = tpotCount;
+        this._tensorfoldTpotSum = tpotSum;
+      } else {
+        const running = Number(this.requestsRunning);
+        const gen = Number(this.generationTps);
+        if (Number.isFinite(gen) && gen > 0 && Number.isFinite(running) && running > 0) {
+          this.perStreamTps = Math.max(0, Math.round((gen / running) * 100) / 100);
+        } else if ((Number.isFinite(running) ? running : 0) <= 0 && (!(Number.isFinite(gen)) || gen <= 0)) {
+          // Truly idle with nothing ever measured: no per-stream rate to show.
+          this.perStreamTps = null;
+        }
+      }
+    }
+    // Prefill on /metrics-only builds (verified on a live server): during a
+    // 35-second prefill prompt_tokens_total AND every prefill histogram stay
+    // frozen — they advance only in the poll where the request finishes. So no
+    // mid-prefill rate exists; derive the effective per-request rate from the
+    // completion window and HOLD it until the next finish, with a "prefilling"
+    // indicator while a request is open and no tokens have been produced yet.
+    // CAVEAT: prompt_tokens_total counts prefix-cache tokens too and this
+    // surface has no cached counter — the number is an effective rate, not raw
+    // GPU compute speed (the label says so).
+    if (!queueOnly && Number.isFinite(dtSec) && dtSec > 0) {
+      let prefillPrefix = null;
+      if (m("request_prefill_seconds_count") != null) prefillPrefix = "request_prefill_seconds";
+      else if (m("request_prefill_time_seconds_count") != null) prefillPrefix = "request_prefill_time_seconds";
+      if (prefillPrefix && Number.isFinite(prompt) && prompt >= 0) {
+        const pSum = m(`${prefillPrefix}_sum`);
+        const pCount = m(`${prefillPrefix}_count`);
+        if (Number.isFinite(pSum) && Number.isFinite(pCount) && pSum >= 0 && pCount >= 0) {
+          const prevPrompt = this._tensorfoldPromptTokens;
+          const prevSum = this._tensorfoldPrefillSum;
+          const prevCount = this._tensorfoldPrefillCount;
+          if (
+            prevPrompt != null && prevSum != null && prevCount != null &&
+            prompt >= prevPrompt && pSum >= prevSum && pCount >= prevCount
+          ) {
+            const dPrompt = prompt - prevPrompt;
+            const dSec = pSum - prevSum;
+            if (pCount > prevCount && dPrompt > 0) {
+              // Sanity gate (all conditions measured on a live server): tiny
+              // prompts (the 1-200-token showcase/bench kind) and prefix-cache
+              // servings finish with sub-millisecond prefill times, so their
+              // ratio is timer noise or cache credit, not GPU throughput —
+              // observed junk windows ran 44k-313k tok/s against a genuine
+              // cold-prefill ground truth of ~2.8-3.0k (three independent
+              // ~99k-token runs). A real prefill needs real time (>=50 ms),
+              // enough tokens to mean something (>=50), and no GB10-class
+              // Effective rates include cache credit and vary by host; do not cap them
+              // using one machine's cold-compute throughput.
+              const rate = Math.round((dPrompt / dSec) * 100) / 100;
+              if (dSec >= 0.05 && dPrompt >= 50) {
+                // Window ratio = mean over the requests finished in it; the
+                // aggregate is the same measurement (no per-request split here).
+                this.perStreamPrefillTps = Math.max(0, rate);
+                this._tensorfoldPrefillMeasuredAt = Date.now();
+                // Wins over the /health zeroing that ran earlier this poll.
+                this.prefillTps = this.perStreamPrefillTps;
+              } else if (
+                this.perStreamPrefillTps != null &&
+                this._tensorfoldPrefillMeasuredAt != null &&
+                Date.now() - this._tensorfoldPrefillMeasuredAt < 20_000
+              ) {
+                // Hold across polls (and across rejected noise windows), but
+                // expire like the /health path: a stale rate must not masquerade
+                // as current, and _applyExl3Health zeroes it every poll anyway.
+                this.prefillTps = this.perStreamPrefillTps;
+              } else {
+                this.perStreamPrefillTps = null;
+                this.prefillTps = 0;
+              }
+            } else if (
+              this.perStreamPrefillTps != null &&
+              this._tensorfoldPrefillMeasuredAt != null &&
+              Date.now() - this._tensorfoldPrefillMeasuredAt < 20_000
+            ) {
+              // Hold across polls: _applyExl3Health zeroes prefillTps from the
+              // counterless /health every poll, so re-state the last real rate.
+              this.prefillTps = this.perStreamPrefillTps;
+            } else {
+              this.perStreamPrefillTps = null;
+              this.prefillTps = 0;
+            }
+          }
+          // Server restart / counter reset: re-seed, keep the held rate.
+          this._tensorfoldPromptTokens = prompt;
+          this._tensorfoldPrefillSum = pSum;
+          this._tensorfoldPrefillCount = pCount;
+        }
+      }
+      // The only live prefill signal this build has: a request is open and no
+      // decode has been produced yet. (Queue-only waits keep running at 0.)
+      const openReq = Number.isFinite(this.requestsRunning) && this.requestsRunning > 0;
+      const genRunning = m("generation_tokens_running");
+      if (openReq && Number.isFinite(genRunning)) {
+        this.prefillActive = genRunning === 0;
+      }
     }
   }
 
@@ -2815,6 +2972,8 @@ export class LlmProbe {
       slotsActive: this.slotsActive,
       slotsTotal: this.slotsTotal,
       generationTps: this.generationTps,
+      perStreamTps: this.perStreamTps,
+      perStreamPrefillTps: this.perStreamPrefillTps,
       prefillTps: this.prefillTps,
       decodeActive: this.decodeActive === true,
       generationTpsSource: this.generationTpsSource,
@@ -2857,6 +3016,8 @@ export class LlmProbe {
       slotsActive: 0,
       slotsTotal: 0,
       generationTps: 0,
+      perStreamTps: null,
+      perStreamPrefillTps: null,
       prefillTps: 0,
       decodeActive: false,
       generationTpsSource: null,
