@@ -2239,8 +2239,8 @@ export class SystemCollector {
       // GB10 also exposes nvme/mlx5 sensors; the name allowlist keeps those out.
       // Every line is "<name> <millidegrees>" so the reader can say which sensor
       // it used — an ACPI zone must not be reported as the CPU (#142).
-      'for h in /sys/class/hwmon/*; do n=$(cat "$h/name" 2>/dev/null); case "$n" in coretemp|k10temp|zenpower|acpitz|soc_thermal) for t in "$h"/temp*_input; do v=$(cat "$t" 2>/dev/null); [ -n "$v" ] && echo "$n $v"; break; done;; esac; done',
-      'for z in /sys/class/thermal/thermal_zone*; do n=$(cat "$z/type" 2>/dev/null); v=$(cat "$z/temp" 2>/dev/null); [ -n "$v" ] && echo "$n $v"; done || true',
+      'for h in $(find /sys/class/hwmon -mindepth 1 -maxdepth 1 2>/dev/null | sort); do n=$(cat "$h/name" 2>/dev/null); case "$n" in coretemp|k10temp|zenpower|acpitz|soc_thermal) for t in $(find -L "$h" -mindepth 1 -maxdepth 1 -name \'temp*_input\' 2>/dev/null | sort); do v=$(cat "$t" 2>/dev/null); [ -n "$v" ] && echo "$n $v"; break; done;; esac; done',
+      'for z in $(find /sys/class/thermal -maxdepth 1 -name \'thermal_zone*\' 2>/dev/null | sort); do n=$(cat "$z/type" 2>/dev/null); v=$(cat "$z/temp" 2>/dev/null); [ -n "$v" ] && echo "$n $v"; done || true',
     ].join("; ");
   }
 
@@ -2355,15 +2355,15 @@ export class SystemCollector {
     }
   }
 
-  async _getRemoteStorage() {
+  async _getRemoteStorage(execute = sshExec) {
     try {
       // Include root (/); exclude pseudo filesystems via -x and type filter. The block devices'
       // cumulative sector counters ride in the same round trip, after a marker line.
       const cmd =
         "df -l -B1 -T -x tmpfs -x devtmpfs -x squashfs -x overlay -x efivarfs -x proc -x sysfs -x devpts -x cgroup -x cgroup2 2>/dev/null; " +
         `echo ${REMOTE_IO_MARKER}; ` +
-        'for d in /sys/block/*; do echo "${d##*/} $(cat "$d/stat" 2>/dev/null)"; done 2>/dev/null';
-      const output = await sshExec(this.spark, cmd);
+        'for d in $(find /sys/block -mindepth 1 -maxdepth 1 2>/dev/null | sort); do echo "${d##*/} $(cat "$d/stat" 2>/dev/null)"; done 2>/dev/null';
+      const output = await execute(this.spark, cmd);
       return this._parseRemoteStorage(output);
     } catch (err) {
       console.error(`[SystemCollector] Remote Storage error for ${this.spark.id}:`, err.message);
@@ -2660,12 +2660,12 @@ export class SystemCollector {
    * macOS model inventory (presence only, no serving probe): ollama tags +
    * ~/models/* sizes. Enables the dashboard to show what a Mac host holds.
    */
-  async collectMacModels() {
+  async collectMacModels(execute = sshExec) {
     if (!this.isMac || this.spark.isLocal) return null;
     try {
-      const output = await sshExec(
+      const output = await execute(
         this.spark,
-        "ollama list 2>/dev/null || $HOME/.ollama/bin/ollama list 2>/dev/null || /usr/local/bin/ollama list 2>/dev/null || /opt/homebrew/bin/ollama list 2>/dev/null; echo '---'; du -sh $HOME/models/* 2>/dev/null",
+        "ollama list 2>/dev/null || $HOME/.ollama/bin/ollama list 2>/dev/null || /usr/local/bin/ollama list 2>/dev/null || /opt/homebrew/bin/ollama list 2>/dev/null; echo '---'; find \"$HOME/models\" -mindepth 1 -maxdepth 1 ! -name '.*' 2>/dev/null | sort | while IFS= read -r d; do du -sh \"$d\" 2>/dev/null; done",
       );
       const sections = output.split("---");
       const ollama = [];
@@ -2689,7 +2689,7 @@ export class SystemCollector {
     }
   }
 
-  async _getRemoteNetwork() {
+  async _getRemoteNetwork(execute = sshExec) {
     try {
       const cmd = [
         "cat /proc/net/dev 2>/dev/null",
@@ -2699,7 +2699,7 @@ export class SystemCollector {
         "ip -4 addr show 2>/dev/null",
         "echo '---'",
         // Collect operstate for all non-virtual interfaces in one go
-        "for d in /sys/class/net/*/operstate; do echo \"$(basename $(dirname $d)):$(cat $d)\"; done",
+        "for d in $(find -L /sys/class/net -mindepth 2 -maxdepth 2 -name operstate 2>/dev/null | sort); do echo \"$(basename $(dirname $d)):$(cat $d)\"; done",
         "echo '---'",
         // WoL MAC for the primary LAN NIC on DGX Spark
         `cat /sys/class/net/${WOL_INTERFACE}/address 2>/dev/null || true`,
@@ -2708,10 +2708,10 @@ export class SystemCollector {
         // interface is primary only falls out of the route table above, and
         // fetching that one afterwards cost a second SSH login per poll.
         // Virtual interfaces have no `speed`; they just come back blank.
-        "for d in /sys/class/net/*/speed; do echo \"$(basename $(dirname $d)):$(cat $d 2>/dev/null)\"; done 2>/dev/null || true",
+        "for d in $(find -L /sys/class/net -mindepth 2 -maxdepth 2 -name speed 2>/dev/null | sort); do echo \"$(basename $(dirname $d)):$(cat $d 2>/dev/null)\"; done 2>/dev/null || true",
       ].join("; ");
 
-      const output = await sshExec(this.spark, cmd);
+      const output = await execute(this.spark, cmd);
       const sections = output.split("---");
       const devOut = sections[0]?.trim() || "";
       const routeOut = sections[1]?.trim() || "";

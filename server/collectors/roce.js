@@ -11,13 +11,13 @@
  */
 
 export const ROCE_FAST_SCRIPT = [
-  'for d in /sys/class/infiniband/*; do',
+  'for d in $(find /sys/class/infiniband -mindepth 1 -maxdepth 1 2>/dev/null | sort); do',
   '  [ -d "$d" ] || continue',
   '  n=$(basename "$d"); p="$d/ports/1"',
   '  nd=$(ls "$d/device/net" 2>/dev/null | head -1)',
   '  echo "DEV|$n|$(cat $p/state 2>/dev/null)|$(cat $p/phys_state 2>/dev/null)|$(cat $p/rate 2>/dev/null)|$(cat $p/link_layer 2>/dev/null)|$nd"',
   // One grep for all counters ("path:value" lines), instead of a cat and a basename each.
-  '  grep -H "" "$p"/hw_counters/* 2>/dev/null | sed "s#^.*/#CNT|$n|#; s#:#|#"',
+  '  find "$p/hw_counters" -maxdepth 1 -type f 2>/dev/null | sort | while IFS= read -r f; do grep -H "" "$f" 2>/dev/null; done | sed "s#^.*/#CNT|$n|#; s#:#|#"',
   '  if [ -n "$nd" ]; then',
   '    s="/sys/class/net/$nd"',
   '    echo "NET|$nd|$(cat $s/operstate 2>/dev/null)|$(cat $s/mtu 2>/dev/null)|$(cat $s/speed 2>/dev/null)|$(cat $s/statistics/rx_bytes 2>/dev/null)|$(cat $s/statistics/tx_bytes 2>/dev/null)|$(cat $s/statistics/rx_errors 2>/dev/null)|$(cat $s/statistics/tx_errors 2>/dev/null)|$(cat $s/statistics/rx_dropped 2>/dev/null)|$(cat $s/statistics/tx_dropped 2>/dev/null)"',
