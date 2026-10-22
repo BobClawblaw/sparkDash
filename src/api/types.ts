@@ -443,6 +443,20 @@ export interface LlmMetrics {
   generationTps: number;
   /** How generationTps was measured when a backend exposes a fallback. */
   generationTpsSource?: "window" | "slot-mean" | null;
+  /**
+   * Average decode tok/s of ONE stream (aggregate ÷ active streams when all
+   * decode in lockstep). Only engines publishing a per-token latency histogram
+   * report it; null otherwise.
+   */
+  perStreamTps?: number | null;
+  /**
+   * Effective prefill tok/s of ONE request (aggregate equals it on engines
+   * without a per-request split). Derived from prompt-token and prefill-second
+   * counters that advance when a request FINISHES, so it is held between
+   * completions. Prompt counters include prefix-cache hits — treat it as an
+   * effective rate, not raw GPU compute speed; null when unavailable.
+   */
+  perStreamPrefillTps?: number | null;
   prefillTps: number;
   /** A prompt is being processed right now. With no live rate available (TensorFold reports totals only for finished requests) the UI says "prefilling" instead of 0. */
   prefillActive?: boolean;
