@@ -107,9 +107,9 @@ export class HealthEvaluator {
     out.push({
       id: "low-power",
       severity: "warn",
-      title: "GPU looks stuck in a low-power state",
+      title: "GPU has high utilisation with low power draw",
       detail: `${Math.round(util)}% utilisation but only ${draw.toFixed(1)} W for ${this._lowPowerStreak} samples in a row.`,
-      hint: "Often a driver or power-management hiccup. A GPU reset or a reboot usually clears it; check dmesg for NVRM errors first.",
+      hint: "This can be normal during memory-bound decode. Check workload progress and token throughput first; if progress has stopped, inspect driver logs and power-management settings.",
     });
   }
 
