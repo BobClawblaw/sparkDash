@@ -215,8 +215,8 @@ describe("result helpers", () => {
   });
 
   it("explains installer exit codes", () => {
-    expect(installExitExplanation(127)).toMatch(/npm was not found/);
-    expect(installExitExplanation(3)).toMatch(/download failed/);
+    expect(installExitExplanation(127)).toMatch(/Node\.js or npm is missing/);
+    expect(installExitExplanation(3)).toMatch(/npm could not install/);
     expect(installExitExplanation(4)).toMatch(/smoke test/);
     expect(installExitExplanation(1)).toBeNull();
   });

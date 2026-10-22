@@ -98,7 +98,7 @@ function setup({ manager = {}, env = {}, extraBin = [], onlyBin = null, fake = t
   const PATH = onlyBin ?? [...extraBin, NODE_DIR, "/usr/local/bin", "/usr/bin", "/bin"].join(":");
   const spawnProcess = (_s, cmd, opts = {}) => {
     const child = spawn("bash", ["-c", cmd], {
-      env: { HOME: home, PATH, LANG: "C", SPARKDASH_REA_GRACE: "2", SPARKDASH_REA_NODE_SYSTEM_DIRS: "", SPARKDASH_REA_TICK: "1", SPARKDASH_REA_LOGMAX: "100000", ...env },
+      env: { HOME: home, PATH, LANG: "C", SPARKDASH_REA_GRACE: "2", SPARKDASH_REA_TICK: "1", SPARKDASH_REA_LOGMAX: "100000", ...env },
       stdio: [opts.stdin ? "pipe" : "ignore", "pipe", "pipe"],
       detached: true,
     });

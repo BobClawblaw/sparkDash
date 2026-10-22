@@ -61,30 +61,16 @@ describe("SetupCard", () => {
     expect(container.textContent).toContain("REA is turned off");
   });
 
-  it("blocks the install when node is too old and cannot be fetched, and says why", () => {
-    const { container } = mount({
-      status: statusData({ node: { path: "/usr/bin/node", version: "20.1.0", ok: false, installable: false, installReason: "tar is not installed" }, installed: false }),
-    });
+  it("blocks the install when node is too old and says why", () => {
+    const { container } = mount({ status: statusData({ node: { path: "/usr/bin/node", version: "20.1.0", ok: false }, installed: false }) });
     expect(button(container, /Install REA/)!.disabled).toBe(true);
     expect(container.textContent).toContain("Node.js 20.1.0 is older than 22.19");
-    expect(container.textContent).toContain("tar is not installed");
-  });
-
-  it("offers the install when node is missing but the installer can fetch it, and says it will", () => {
-    const { container } = mount({
-      status: statusData({ node: { path: null, version: null, ok: false, installable: true, installVersion: "22.23.3" }, npm: false, installed: false }),
-    });
-    expect(button(container, /Install REA/)!.disabled).toBe(false);
-    expect(container.textContent).toContain("will also set up Node.js 22.23.3");
-    expect(container.textContent).toContain("SHA-256");
   });
 
   it.each([
-    [127, /npm was not found next to the Node\.js/],
-    [3, /A download failed/],
-    [4, /checksum pinned/],
-    [5, /cannot get Node\.js/],
-    [6, /could not be unpacked/],
+    [127, /Node\.js or npm is missing/],
+    [3, /npm could not install/],
+    [4, /smoke test failed/],
   ])("explains install exit code %i", (code, re) => {
     const lines: ReaLine[] = [{ seq: 1, text: "npm ERR! something" }];
     const { container } = mount({ install: install({ job: job({ status: "failed", exitCode: code }), lines }) });

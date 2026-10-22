@@ -6,7 +6,7 @@ import { Panel } from "../ui/Panel";
 import { Tag } from "../ui/Tag";
 import type { InstallState } from "./hooks";
 import { CopyButton, Notice } from "./parts";
-import { installExitExplanation, nodeWillBeInstalled, readinessProblems, reaReady } from "./reaLogic";
+import { installExitExplanation, readinessProblems, reaReady } from "./reaLogic";
 
 interface SetupCardProps {
   unitName: string;
@@ -85,8 +85,6 @@ export function SetupCard({ unitName, setup, setupError, status, statusError, lo
           ? "Checking whether this dashboard allows changes…"
           : null;
   const reason = problems[0] ?? gate ?? (install.running ? "An install is already running on this unit." : null) ?? (!status ? "Checking the unit…" : null);
-  const willInstallNode = nodeWillBeInstalled(status);
-  const nodeVersion = status?.node.installVersion ?? "22";
   const verb = status?.installed ? (outdated ? "Update to" : "Reinstall") : "Install";
   const showInstall = !status || !ready || outdated;
   const canInstall = !reason && !install.starting && !install.running;
@@ -107,20 +105,8 @@ export function SetupCard({ unitName, setup, setupError, status, statusError, lo
         {status ? (
           <ul className="rea-checks" aria-label={`Readiness of ${unitName}`}>
             <Check ok={status.reachable} label="Unit reachable" />
-            <Check
-              ok={status.node.ok}
-              label="Node.js"
-              detail={
-                status.node.ok
-                  ? `${status.node.version ?? ""}${status.node.path ? ` at ${status.node.path}` : ""}`
-                  : willInstallNode
-                    ? `${status.node.version ? `${status.node.version} is too old; ` : "not found; "}the install will add ${nodeVersion}`
-                    : status.node.version
-                      ? `${status.node.version} (needs ${minNode} or newer)`
-                      : `needs ${minNode} or newer`
-              }
-            />
-            <Check ok={status.npm || willInstallNode} label="npm" detail={!status.npm && willInstallNode ? "comes with Node.js" : null} />
+            <Check ok={status.node.ok} label="Node.js" detail={status.node.version ? `${status.node.version} (needs ${minNode} or newer)` : `needs ${minNode} or newer`} />
+            <Check ok={status.npm} label="npm" />
             <Check
               ok={status.installed && status.upToDate}
               label="REA"
@@ -145,14 +131,6 @@ export function SetupCard({ unitName, setup, setupError, status, statusError, lo
           </ul>
         ) : null}
 
-        {willInstallNode && showInstall ? (
-          <Notice tone="info" title={`The install will also set up Node.js ${nodeVersion}`}>
-            {unitName} has no Node.js {minNode}+ that sparkDash could find (it looked on the PATH, nvm, volta, fnm, asdf and <code>~/.local</code>). The install
-            downloads the official Node.js {nodeVersion} build from nodejs.org, checks its SHA-256 against the value pinned in this dashboard, and unpacks it
-            under <code>~/.local/share/sparkdash/node</code>. No root, no package manager, and nothing else on the unit is touched.
-          </Notice>
-        ) : null}
-
         {showInstall ? (
           <div className="rea-actions">
             <button type="button" className="btn btn--primary" disabled={!canInstall} onClick={() => void install.start()}>
@@ -169,7 +147,6 @@ export function SetupCard({ unitName, setup, setupError, status, statusError, lo
           One click installs the pinned REA {pinned || "release"} on {unitName} with <code>npm ci --ignore-scripts</code>, as the user the dashboard
           connects with, under <code>~/.local/share/sparkdash/rea</code>. Nothing is installed on the machine running the dashboard, and REA&apos;s own
           agent-client setup is never run.
-          {status && status.python3 === false ? " python3 is not installed there, so uploading archives (zip/tar) will not work until it is." : ""}
         </p>
 
         {install.error && !install.running ? (

@@ -50,15 +50,11 @@ export function plain(v: unknown, max = 200): string {
 export function installExitExplanation(code: number | null | undefined): string | null {
   switch (code) {
     case 127:
-      return "npm was not found next to the Node.js on the unit. Install a complete Node.js 22.19+ (with npm) there, or remove the partial one, then check again.";
+      return "Node.js or npm is missing on the unit, or Node is older than the minimum (22.19). Install a current Node.js there, then check again.";
     case 3:
-      return "A download failed: either Node.js from nodejs.org or the pinned packages from the npm registry (no network access, a proxy, a full disk, or a permissions problem). The output above has the message.";
+      return "npm could not install the pinned packages (no network or registry access, a full disk, or a permissions problem). The output above has npm's message.";
     case 4:
-      return "A check failed: the downloaded Node.js did not match the checksum pinned in this dashboard, or REA's smoke test (rea --version or rea doctor) did not pass. Nothing was switched over; the output above shows which.";
-    case 5:
-      return "This unit cannot get Node.js from the installer (not Linux, an unsupported CPU, or tar / sha256sum / a downloader is missing). Install Node.js 22.19+ there yourself, then check again.";
-    case 6:
-      return "The downloaded Node.js could not be unpacked or does not run on this unit (wrong architecture or a missing library). Install Node.js 22.19+ there yourself, then check again.";
+      return "The packages installed, but REA's smoke test failed (rea --version or rea doctor did not run). Nothing was switched over; the output above shows why.";
     case 124:
       return "The install ran out of time.";
     case 143:
@@ -73,27 +69,14 @@ export function reaReady(status: ReaStatus | null | undefined): boolean {
   return Boolean(status && status.reachable && status.node.ok && status.npm && status.installed);
 }
 
-/** Blocking problems only: a missing Node.js the installer can fetch is not one (see nodeWillBeInstalled). */
 export function readinessProblems(status: ReaStatus, minNode: string): string[] {
   const out: string[] = [];
-  if (!status.reachable) {
-    out.push("The unit cannot be reached over SSH.");
-    return out;
-  }
-  if (!status.node.ok) {
-    if (!status.node.installable) {
-      const have = status.node.version ? `Node.js ${status.node.version} is older than ${minNode}` : `Node.js ${minNode} or newer is not installed`;
-      out.push(`${have}, and the installer cannot fetch one here${status.node.installReason ? `: ${status.node.installReason}` : ""}.`);
-    }
-  } else if (!status.npm) {
-    out.push("npm is not installed next to Node.js on the unit.");
+  if (!status.reachable) out.push("The unit cannot be reached over SSH.");
+  else {
+    if (!status.node.ok) out.push(status.node.version ? `Node.js ${status.node.version} is older than ${minNode}.` : `Node.js ${minNode} or newer is not installed.`);
+    if (!status.npm) out.push("npm is not installed.");
   }
   return out;
-}
-
-/** No usable Node.js, but the install will download the pinned official build into the user's home. */
-export function nodeWillBeInstalled(status: ReaStatus | null | undefined): boolean {
-  return Boolean(status && status.reachable && !status.node.ok && status.node.installable);
 }
 
 // ── run status ──

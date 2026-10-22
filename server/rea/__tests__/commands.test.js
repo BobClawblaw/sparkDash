@@ -91,9 +91,6 @@ const unitEnv = (home, extra = {}) => ({
   PATH: BASE_PATH,
   LANG: "C",
   SPARKDASH_REA_GRACE: "2",
-  SPARKDASH_REA_NODE_SYSTEM_DIRS: "",
-  // Never reach the network: the Node.js bootstrap downloads from here unless a test points it at a fixture.
-  SPARKDASH_REA_NODE_DIST: "file:///nonexistent-node-dist",
   SPARKDASH_REA_TICK: "1",
   SPARKDASH_REA_LOGMAX: "100000",
   ...extra,
@@ -911,7 +908,7 @@ test("install: success lays down the pinned tree, launcher and record; npm gets 
   assert.equal(fs.readFileSync(path.join(home, "npm.lock.seen"), "utf8"), fs.readFileSync(new URL("../pinned/package-lock.json", import.meta.url), "utf8"), "lockfile arrived byte for byte");
   const launcher = path.join(home, ".local", "bin", "rea-sparkdash");
   assert.equal(fs.statSync(launcher).mode & 0o777, 0o755);
-  assert.match(fs.readFileSync(launcher, "utf8"), /exec \S*node\S* \S*node_modules\/rea-agents\/scripts\/rea\.mjs "\$@"/);
+  assert.match(fs.readFileSync(launcher, "utf8"), /exec node .*node_modules\/rea-agents\/scripts\/rea\.mjs "\$@"/);
   const v = execFileSync(launcher, ["--version"], { env: { HOME: home, PATH: installEnv(stub).PATH } }).toString().trim();
   assert.equal(v, REA_VERSION);
   const rec = kv(fs.readFileSync(path.join(home, ".config", "sparkdash", "rea-install"), "utf8"));
@@ -953,46 +950,17 @@ test("install: a failed smoke test leaves the previous install untouched and rem
   assert.ok(!fs.existsSync(`${finalDir(home)}.staging`));
 });
 
-/** A PATH dir holding every /usr/bin tool except node/npm, so "no node on this unit" is real even on a dev host. */
-function noNodeBin() {
-  const dir = tmp("rea-nonode-");
-  for (const f of fs.readdirSync("/usr/bin")) {
-    if (/^(node|nodejs|npm|npx|corepack)$/.test(f)) continue;
-    try { fs.symlinkSync(path.join("/usr/bin", f), path.join(dir, f)); } catch {}
-  }
-  return dir;
-}
-
-/** A file:// Node.js dist tree with a fake v22.23.3 tarball (bin/node + bin/npm); returns {dist, sha}. */
-function nodeDist(stub, { npm = true } = {}) {
-  const arch = { aarch64: "arm64", x86_64: "x64" }[execFileSync("uname", ["-m"]).toString().trim()] || "x64";
-  const work = tmp("rea-nodedist-");
-  const root = path.join(work, "pkg");
-  fs.mkdirSync(path.join(root, "bin"), { recursive: true });
-  fs.writeFileSync(path.join(root, "bin", "node"), `#!/bin/bash\nif [ "$1" = --version ]; then echo v22.23.3; exit 0; fi\nexec "${process.execPath}" "$@"\n`, { mode: 0o755 });
-  if (npm) fs.copyFileSync(path.join(stub.bin, "npm"), path.join(root, "bin", "npm")), fs.chmodSync(path.join(root, "bin", "npm"), 0o755);
-  const dir = path.join(work, "dist", "v22.23.3");
-  fs.mkdirSync(dir, { recursive: true });
-  const tar = path.join(dir, `node-v22.23.3-linux-${arch}.tar.gz`);
-  execFileSync("tar", ["-czf", tar, "-C", root, "."]);
-  const sha = crypto.createHash("sha256").update(fs.readFileSync(tar)).digest("hex");
-  return { dist: `file://${path.join(work, "dist")}`, sha };
-}
-
-test("install: no usable node and no way to fetch one -> 3 before anything is installed", async () => {
+test("install: node too old or missing -> 127 before anything is written", async () => {
   const stub = stubTools();
   const payload = installPayload();
-  const nobin = noNodeBin();
-  for (const ver of [null, "v20.11.0", "v22.18.9", "v24.10.0", "v25.0.0"]) {
+  for (const ver of ["v20.11.0", "v22.18.9", "v24.10.0", "v25.0.0"]) {
     const home = tmp("rea-home-");
     homes.push(home);
-    const env = ver ? installEnv(stub, { FAKE_NODE_VERSION: ver }) : { PATH: nobin };
-    const r = await exec(buildInstallProgram({ nonce: NONCE }), { home, stdin: payload, env });
-    assert.equal(exitOf(r.out), 3, `${ver}: ${r.out}`);
-    assert.match(r.out, /Could not download Node\.js/);
+    const r = await exec(buildInstallProgram({ nonce: NONCE }), { home, stdin: payload, env: installEnv(stub, { FAKE_NODE_VERSION: ver }) });
+    assert.equal(exitOf(r.out), 127, `${ver}: ${r.out}`);
+    assert.match(r.out, /too old/);
     assert.ok(!fs.existsSync(path.join(home, "npm.args")), "npm was not run");
-    assert.ok(!fs.existsSync(finalDir(home)) && !fs.existsSync(`${finalDir(home)}.staging`));
-    assert.ok(!fs.existsSync(path.join(home, ".local", "share", "sparkdash", "node", "v22.23.3.staging")));
+    assert.ok(!fs.existsSync(path.join(home, ".local")));
   }
   for (const ver of ["v22.19.0", "v24.11.0", "v26.0.1"]) {
     const home = tmp("rea-home-");
@@ -1000,74 +968,14 @@ test("install: no usable node and no way to fetch one -> 3 before anything is in
     const r = await exec(buildInstallProgram({ nonce: NONCE }), { home, stdin: payload, env: installEnv(stub, { FAKE_NODE_VERSION: ver }) });
     assert.equal(exitOf(r.out), 0, `${ver}: ${r.out}`);
   }
-});
-
-test("install: node without npm next to it -> 127", async () => {
+  // no node at all
   const home = tmp("rea-home-");
   homes.push(home);
-  const stub = stubTools();
-  const bin = tmp("rea-nonpm-");
-  fs.copyFileSync(path.join(stub.bin, "node"), path.join(bin, "node"));
-  fs.chmodSync(path.join(bin, "node"), 0o755);
-  const nobin = noNodeBin();
-  const r = await exec(buildInstallProgram({ nonce: NONCE }), { home, stdin: installPayload(), env: { PATH: `${bin}:${nobin}`, FAKE_NODE_VERSION: "v22.23.1" } });
-  assert.equal(exitOf(r.out), 127, r.out);
-  assert.match(r.out, /npm was not found/);
-});
-
-test("install: bootstraps the pinned Node.js from the dist, verifies it, then installs REA with it", async () => {
-  const home = tmp("rea-home-");
-  homes.push(home);
-  const stub = stubTools();
-  const { dist, sha } = nodeDist(stub);
-  const env = { PATH: noNodeBin(), SPARKDASH_REA_NODE_DIST: dist, SPARKDASH_REA_NODE_SHA256: sha };
-  // npm is only available from the unpacked Node tree, which the program puts on PATH.
-  const r = await exec(buildInstallProgram({ nonce: NONCE }), { home, stdin: installPayload(), env });
-  assert.equal(exitOf(r.out), 0, r.out);
-  const nodeBin = path.join(home, ".local", "share", "sparkdash", "node", "v22.23.3", "bin", "node");
-  assert.ok(fs.existsSync(nodeBin));
-  assert.ok(!fs.existsSync(`${path.dirname(path.dirname(nodeBin))}.staging`));
-  assert.ok(fs.existsSync(path.join(finalDir(home), "node_modules", REA_PKG, "scripts", "rea.mjs")));
-  const launcher = fs.readFileSync(path.join(home, ".local", "bin", "rea-sparkdash"), "utf8");
-  assert.ok(launcher.includes(`exec ${nodeBin} `), launcher);
-  // a second install finds the bootstrapped node and does not download again
-  const again = await exec(buildInstallProgram({ nonce: NONCE }), { home, stdin: installPayload(), env: { PATH: noNodeBin(), SPARKDASH_REA_NODE_DIST: "file:///nonexistent-node-dist" } });
-  assert.equal(exitOf(again.out), 0, again.out);
-  // and status sees it
-  const st = await exec(buildStatusProgram({ nonce: NONCE }), { home, env: { PATH: noNodeBin() } });
-  assert.match(st.out, /NODE_OK=1/);
-});
-
-test("install: a Node.js download that fails the pinned checksum is refused and cleaned up", async () => {
-  const home = tmp("rea-home-");
-  homes.push(home);
-  const stub = stubTools();
-  const { dist } = nodeDist(stub);
-  const r = await exec(buildInstallProgram({ nonce: NONCE }), { home, stdin: installPayload(), env: { PATH: noNodeBin(), SPARKDASH_REA_NODE_DIST: dist } });
-  assert.equal(exitOf(r.out), 4, r.out);
-  assert.match(r.out, /pinned checksum/);
-  assert.ok(!fs.existsSync(path.join(home, ".local", "share", "sparkdash", "node", "v22.23.3")));
-  assert.ok(!fs.existsSync(path.join(home, ".local", "share", "sparkdash", "node", "v22.23.3.staging")));
-  assert.ok(!fs.existsSync(path.join(home, "npm.args")));
-});
-
-test("install/status: node under nvm is found though PATH has no node", async () => {
-  const home = tmp("rea-home-");
-  homes.push(home);
-  const stub = stubTools();
-  const nvmBin = path.join(home, ".nvm", "versions", "node", "v22.23.1", "bin");
-  fs.mkdirSync(nvmBin, { recursive: true });
-  for (const f of ["node", "npm"]) {
-    fs.copyFileSync(path.join(stub.bin, f), path.join(nvmBin, f));
-    fs.chmodSync(path.join(nvmBin, f), 0o755);
-  }
-  const env = { PATH: noNodeBin(), FAKE_NODE_VERSION: "v22.23.1" };
-  const st = await exec(buildStatusProgram({ nonce: NONCE }), { home, env });
-  assert.match(st.out, /NODE_OK=1/);
-  const r = await exec(buildInstallProgram({ nonce: NONCE }), { home, stdin: installPayload(), env });
-  assert.equal(exitOf(r.out), 0, r.out);
-  assert.ok(fs.readFileSync(path.join(home, ".local", "bin", "rea-sparkdash"), "utf8").includes(`exec ${path.join(nvmBin, "node")} `));
-  assert.ok(!fs.existsSync(path.join(home, ".local", "share", "sparkdash", "node")), "nothing was downloaded");
+  const nobin = tmp("rea-nobin-");
+  for (const t of ["base64", "bash"]) fs.symlinkSync(execFileSync("which", [t]).toString().trim(), path.join(nobin, t));
+  const r = await exec(buildInstallProgram({ nonce: NONCE }), { home, stdin: payload, env: { PATH: nobin } });
+  assert.equal(exitOf(r.out), 127);
+  assert.match(r.out, /node is not installed/);
 });
 
 test("install: a payload that does not pin the version is refused", async () => {

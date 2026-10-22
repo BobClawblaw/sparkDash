@@ -32,16 +32,6 @@ export { exitToken };
 
 export const REA_PKG = "rea-agents";
 export const REA_VERSION = "6.4.0";
-/**
- * Node.js sparkDash installs for REA when the unit has no usable one (user prefix, no root): the official
- * linux tarball, verified against these SHA-256 values (from https://nodejs.org/dist/v22.23.3/SHASUMS256.txt).
- */
-export const NODE_PIN_VERSION = "22.23.3";
-export const NODE_PIN_SHA256 = Object.freeze({
-  arm64: "5ced2d48d1d7198739b7f86804de0171aefb6823b684b12341d3321afc3cb0b2",
-  x64: "1084aa36196bba4c3a5e69a1ee388a6e4ff729dad09445fbcd434b28fe3c24af",
-});
-export const NODE_INSTALL_ROOT = "$HOME/.local/share/sparkdash/node";
 export const INSTALL_ROOT = "$HOME/.local/share/sparkdash/rea";
 export const RUN_ROOT = "$HOME/.cache/sparkdash/rea/runs";
 export const UPLOAD_ROOT = "$HOME/.cache/sparkdash/rea/uploads";
@@ -157,27 +147,6 @@ node_ok() {
     24) [ "$min" -ge 11 ];;
     *) [ "$maj" -ge 26 ];;
   esac
-}
-# A non-login SSH shell does not see nvm/volta/fnm/asdf or sparkDash's own Node: look there too and take the
-# highest version that satisfies REA. Sets NODE_BIN / NODE_VER (empty when none) and puts its directory first on PATH.
-find_node() {
-  local c v best="" bestv="" sysdirs d syslist=""
-  # System directories are overridable (SPARKDASH_REA_NODE_SYSTEM_DIRS, colon separated) so tests are hermetic.
-  sysdirs="\${SPARKDASH_REA_NODE_SYSTEM_DIRS-/usr/local/bin:/usr/bin}"
-  local IFS_OLD="$IFS"; IFS=:
-  for d in $sysdirs; do [ -z "$d" ] || syslist="$syslist $d/node"; done
-  IFS="$IFS_OLD"
-  for c in "$HOME"/.local/share/sparkdash/node/v*/bin/node "$HOME"/.nvm/versions/node/*/bin/node \
-           "$HOME"/.volta/bin/node "$HOME"/.local/share/fnm/node-versions/*/installation/bin/node \
-           "$HOME"/.fnm/node-versions/*/installation/bin/node "$HOME"/.asdf/installs/nodejs/*/bin/node \
-           "$HOME"/.local/bin/node $syslist "$(command -v node 2>/dev/null)"; do
-    [ -n "$c" ] && [ -x "$c" ] && [ ! -d "$c" ] || continue
-    v=$(timeout 10 "$c" --version 2>/dev/null | head -n 1 | tr -cd '0-9A-Za-z.+v-' | head -c 40)
-    node_ok "$v" || continue
-    if [ -z "$best" ] || [ "$(printf '%s\n%s\n' "\${bestv#v}" "\${v#v}" | sort -V | tail -n 1)" = "\${v#v}" ] && [ "\${v#v}" != "\${bestv#v}" ]; then best="$c"; bestv="$v"; fi
-  done
-  NODE_BIN="$best"; NODE_VER="$bestv"
-  [ -z "$NODE_BIN" ] || export PATH="$(dirname "$NODE_BIN"):$PATH"
 }
 `;
 
@@ -495,9 +464,7 @@ export function buildViewProgram({ runId: id, viewB64, sentinel, nonce = "", max
 umask 077
 ${PATH_LINE}
 ${resultLocator(id, S)}
-${NODE_OK}
-find_node
-[ -n "$NODE_BIN" ] || { echo "${S}STATUS"; echo 127; exit 0; }
+command -v node >/dev/null 2>&1 || { echo "${S}STATUS"; echo 127; exit 0; }
 VR="$REALRD/view-req.json"
 JS=$(printf %s '${b64(VIEW_CHECK)}' | base64 -d)
 VIEW_B64='${viewB64}' RESULT="$RES" OUTFILE="$VR" node -e "$JS" 2>/dev/null
@@ -535,9 +502,6 @@ ${resultLocator(rightRunId, S, "RIGHT")}
 RD="$REALRD"
 # \`rea compare\` takes Evidence BUNDLES; a run's result.json is one Evidence record. Wrap each record with REA's
 # own bundle builder (pinned version), into files owned by the right-hand run's directory.
-${NODE_OK}
-find_node
-[ -n "$NODE_BIN" ] || { echo "${S}STATUS"; echo 127; exit 0; }
 LB="$RD/compare-left.bundle.json"; RB="$RD/compare-right.bundle.json"
 BUNDLER="$HOME/.local/share/sparkdash/rea/${REA_VERSION}/node_modules/rea-agents/dist/domain/evidenceBundle.js"
 JS=$(printf %s '${Buffer.from(BUNDLE_JS, "utf8").toString("base64")}' | base64 -d)
@@ -574,29 +538,13 @@ export function buildStatusProgram({ deep = true } = {}) {
 ${PATH_LINE}
 ${NODE_OK}
 clean() { tr -d '\\n\\r' | tr -cd '[:print:]' | head -c 400; }
-find_node
-NODEP="$NODE_BIN"
-NV="$NODE_VER"
-if [ -z "$NODEP" ]; then
-  # Nothing usable: report the best candidate on PATH (too old) and whether the installer can fetch one.
-  NODEP=$(command -v node 2>/dev/null || true)
-  [ -z "$NODEP" ] || NV=$(timeout 10 "$NODEP" --version 2>/dev/null | head -n 1 | tr -cd '0-9A-Za-z.+v-' | head -c 40)
-fi
+NODEP=$(command -v node 2>/dev/null || true)
 echo "NODE=$(printf %s "$NODEP" | clean)"
+NV=""
+if [ -n "$NODEP" ]; then NV=$(timeout 10 node --version 2>/dev/null | head -n 1 | tr -cd '0-9A-Za-z.+v-' | head -c 40); fi
 echo "NODE_VERSION=$NV"
-if [ -n "$NODE_BIN" ]; then echo "NODE_OK=1"; else echo "NODE_OK=0"; fi
+if [ -n "$NV" ] && node_ok "$NV"; then echo "NODE_OK=1"; else echo "NODE_OK=0"; fi
 echo "NPM=$(command -v npm 2>/dev/null | clean)"
-# Can the installer provide Node itself (official tarball into the user's home, verified by SHA-256)?
-case "$(uname -m)" in aarch64|arm64) NARCH=arm64;; x86_64|amd64) NARCH=x64;; *) NARCH="";; esac
-NIREASON=""
-[ "$(uname -s)" = Linux ] || NIREASON="the unit is not Linux"
-[ -n "$NIREASON" ] || [ -n "$NARCH" ] || NIREASON="no official Node.js build for $(uname -m)"
-[ -n "$NIREASON" ] || command -v tar >/dev/null 2>&1 || NIREASON="tar is not installed"
-[ -n "$NIREASON" ] || command -v sha256sum >/dev/null 2>&1 || NIREASON="sha256sum is not installed"
-[ -n "$NIREASON" ] || command -v curl >/dev/null 2>&1 || command -v wget >/dev/null 2>&1 || command -v python3 >/dev/null 2>&1 || NIREASON="none of curl, wget or python3 is available to download it"
-if [ -z "$NIREASON" ]; then echo "NODE_INSTALLABLE=1"; else echo "NODE_INSTALLABLE=0"; echo "NODE_INSTALL_REASON=$NIREASON"; fi
-echo "NODE_PIN=${NODE_PIN_VERSION}"
-echo "PYTHON3=$(command -v python3 2>/dev/null | clean)"
 LCH="${LAUNCHER}"
 IV=""
 if [ -f "$LCH" ] && [ -x "$LCH" ]; then
@@ -662,55 +610,15 @@ ${NODE_OK}
 fail() { echo "[sparkdash] $1"; echo "${TX}$2"; exit 0; }
 step() { echo "[sparkdash] $1"; }
 STG=""
-cleanup() { [ -z "$STG" ] || rm -rf -- "$STG"; [ -z "$NSTG" ] || rm -rf -- "$NSTG"; }
+cleanup() { [ -z "$STG" ] || rm -rf -- "$STG"; }
 trap cleanup EXIT
 trap 'exit 1' TERM INT
 
-NSTG=""
-find_node
-if [ -z "$NODE_BIN" ]; then
-  # No usable Node.js anywhere (PATH, nvm, volta, fnm, asdf, ~/.local): install the pinned official build into
-  # the user's home. No root, no package manager; the tarball is verified against a SHA-256 pinned in sparkDash.
-  step "Node.js 22.19+ was not found on this unit; installing Node.js ${NODE_PIN_VERSION} (official build from nodejs.org) into ~/.local/share/sparkdash/node"
-  case "$(uname -m)" in
-    aarch64|arm64) NARCH=arm64; NSHA="\${SPARKDASH_REA_NODE_SHA256:-${NODE_PIN_SHA256.arm64}}";;
-    x86_64|amd64) NARCH=x64; NSHA="\${SPARKDASH_REA_NODE_SHA256:-${NODE_PIN_SHA256.x64}}";;
-    *) fail "There is no official Node.js build for $(uname -m); install Node.js 22.19+ on the unit and retry." 5;;
-  esac
-  [ "$(uname -s)" = Linux ] || fail "The Node.js installer only supports Linux units." 5
-  command -v tar >/dev/null 2>&1 && command -v sha256sum >/dev/null 2>&1 || fail "tar and sha256sum are needed to install Node.js." 5
-  NV="v${NODE_PIN_VERSION}"
-  NTAR="node-$NV-linux-$NARCH.tar.gz"
-  NURL="\${SPARKDASH_REA_NODE_DIST:-https://nodejs.org/dist}/$NV/$NTAR"
-  NROOT="${NODE_INSTALL_ROOT}"
-  mkdir -p "$NROOT" || fail "Could not create $NROOT." 1
-  NSTG="$NROOT/$NV.staging"
-  rm -rf -- "$NSTG"; mkdir -p "$NSTG" || fail "Could not create the Node.js staging directory." 1
-  step "downloading $NURL"
-  if command -v curl >/dev/null 2>&1; then
-    curl -fsSL --max-time 900 --retry 2 -o "$NSTG/$NTAR" "$NURL" || fail "Could not download Node.js (is nodejs.org reachable from this unit?)." 3
-  elif command -v wget >/dev/null 2>&1; then
-    wget -q -T 60 -t 3 -O "$NSTG/$NTAR" "$NURL" || fail "Could not download Node.js (is nodejs.org reachable from this unit?)." 3
-  elif command -v python3 >/dev/null 2>&1; then
-    python3 -I -c 'import sys, urllib.request; urllib.request.urlretrieve(sys.argv[1], sys.argv[2])' "$NURL" "$NSTG/$NTAR" || fail "Could not download Node.js (is nodejs.org reachable from this unit?)." 3
-  else
-    fail "None of curl, wget or python3 is available to download Node.js." 5
-  fi
-  GOT=$(sha256sum "$NSTG/$NTAR" | cut -d' ' -f1)
-  [ "$GOT" = "$NSHA" ] || fail "The downloaded Node.js does not match the pinned checksum; refusing to use it." 4
-  step "checksum verified; unpacking"
-  tar -xzf "$NSTG/$NTAR" -C "$NSTG" --strip-components=1 || fail "Could not unpack Node.js." 6
-  rm -f -- "$NSTG/$NTAR"
-  [ "$("$NSTG/bin/node" --version 2>/dev/null)" = "$NV" ] || fail "The unpacked Node.js does not run here (wrong architecture or a missing library)." 6
-  rm -rf -- "$NROOT/$NV"
-  mv -- "$NSTG" "$NROOT/$NV" || fail "Could not move Node.js into place." 6
-  NSTG=""
-  find_node
-  [ -n "$NODE_BIN" ] || fail "Node.js was installed but is not usable." 6
-fi
-command -v npm >/dev/null 2>&1 || fail "npm was not found next to node ($NODE_BIN)." 127
-NV="$NODE_VER"
-step "using node $NV at $NODE_BIN"
+command -v node >/dev/null 2>&1 || fail "node is not installed on this unit (REA needs node 22.19+, 24.11+ or 26+)." 127
+command -v npm >/dev/null 2>&1 || fail "npm is not installed on this unit." 127
+NV=$(node --version 2>/dev/null | head -n 1)
+node_ok "$NV" || fail "node $NV is too old: REA needs node 22.19+, 24.11+ or 26+." 127
+step "using node $NV at $(command -v node)"
 
 ROOT="${INSTALL_ROOT}"
 VER="${VER}"
@@ -765,11 +673,11 @@ mkdir -p "$BIN" || fail "Could not create $BIN." 1
 LTMP="$BIN/.rea-sparkdash.$$"
 {
   printf '#!/bin/bash\\n# sparkdash-managed launcher for rea-agents ${VER}\\n'
-  printf 'exec %q %q "$@"\\n' "$NODE_BIN" "$FINAL/node_modules/${REA_PKG}/scripts/rea.mjs"
+  printf 'exec node %q "$@"\\n' "$FINAL/node_modules/${REA_PKG}/scripts/rea.mjs"
 } > "$LTMP" && chmod 755 "$LTMP" && mv -f -- "$LTMP" "${LAUNCHER}" || { rm -f "$LTMP"; fail "Could not write the launcher." 1; }
 REC="${INSTALL_RECORD}"
 mkdir -p "$(dirname "$REC")" || fail "Could not create the config directory." 1
-{ printf 'VERSION=%s\\n' "$VER"; printf 'NODE=%s\\n' "$NV"; printf 'NODE_BIN=%s\\n' "$NODE_BIN"; printf 'DATE=%s\\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"; } > "$REC.$$" && chmod 600 "$REC.$$" && mv -f -- "$REC.$$" "$REC"
+{ printf 'VERSION=%s\\n' "$VER"; printf 'NODE=%s\\n' "$NV"; printf 'DATE=%s\\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"; } > "$REC.$$" && chmod 600 "$REC.$$" && mv -f -- "$REC.$$" "$REC"
 step "installed: ${LAUNCHER} -> $FINAL"
 echo "${TX}0"
 `);

@@ -347,16 +347,7 @@ export class ReaManager extends ToolEvalManager {
     }
     return {
       reachable,
-      node: {
-        path: kv.NODE || null,
-        version: kv.NODE_VERSION || null,
-        ok: kv.NODE_OK === "1",
-        // When no usable Node.js exists, the install can fetch the pinned official build into the user's home.
-        installable: kv.NODE_INSTALLABLE === "1",
-        installReason: kv.NODE_INSTALL_REASON ? clip(kv.NODE_INSTALL_REASON, 200) : null,
-        installVersion: /^[0-9.]{1,20}$/.test(kv.NODE_PIN ?? "") ? kv.NODE_PIN : null,
-      },
-      python3: Boolean(kv.PYTHON3),
+      node: { path: kv.NODE || null, version: kv.NODE_VERSION || null, ok: kv.NODE_OK === "1" },
       npm: Boolean(kv.NPM),
       installed: Boolean(kv.LAUNCHER),
       version,
