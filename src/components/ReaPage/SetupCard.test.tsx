@@ -107,23 +107,6 @@ describe("SetupCard", () => {
     expect(container.textContent).toContain("not sandboxed");
   });
 
-  it("keeps agent-client registrations and optional engines out of the needs-attention verdict", () => {
-    const checks = [
-      { name: "node", ok: true, classification: "environment", detail: "22.23.1" },
-      { name: "hopper", ok: false, classification: "missing_analysis_engine", remediation: "Run rea setup to install Hopper." },
-      { name: "skill:identity", ok: false, classification: "config_drift", remediation: "Run rea setup to update the installed REA skill." },
-      { name: "registration:claude_code", ok: false, classification: "config_drift", remediation: "Run rea setup to refresh this registration." },
-    ];
-    const { container } = mount({ status: statusData({ doctor: { healthy: false, checks } }) });
-    const doctor = container.querySelector(".rea-doctor")!.closest("section")!;
-    expect(doctor.textContent).toContain("healthy");
-    expect(doctor.textContent).not.toContain("needs attention");
-    expect(doctor.querySelectorAll("details")).toHaveLength(2);
-    // the failing-looking ones are only inside the collapsed groups, never in the main list
-    expect(doctor.querySelector(":scope > .rea-doctor")!.textContent).not.toContain("registration:");
-    expect(doctor.textContent).toContain("never runs rea setup");
-  });
-
   it("shows ready and Re-check calls back", () => {
     const onRecheck = vi.fn();
     const { container } = mount({ status: statusData(), onRecheck });

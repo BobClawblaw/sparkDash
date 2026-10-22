@@ -212,16 +212,6 @@
   align-items: center;
   gap: 6px;
 }
-.rea-doctor__more {
-  margin-top: 10px;
-  font-size: 13px;
-}
-.rea-doctor__more > summary {
-  cursor: pointer;
-}
-.rea-doctor__more > p {
-  margin: 6px 0;
-}
 .rea-doctor__fix {
   font-size: 12px;
   color: var(--color-warning);

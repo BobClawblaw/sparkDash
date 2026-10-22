@@ -1,12 +1,12 @@
 import { useId } from "react";
-import type { ReaDoctorCheck, ReaSetup, ReaStatus } from "../../api/types";
+import type { ReaSetup, ReaStatus } from "../../api/types";
 import { CheckIcon, RotateIcon, XIcon } from "../ui/icons";
 import { LiveTerminal, terminalText } from "../ui/LiveTerminal";
 import { Panel } from "../ui/Panel";
 import { Tag } from "../ui/Tag";
 import type { InstallState } from "./hooks";
 import { CopyButton, Notice } from "./parts";
-import { groupDoctorChecks, installExitExplanation, nodeWillBeInstalled, readinessProblems, reaReady } from "./reaLogic";
+import { installExitExplanation, nodeWillBeInstalled, readinessProblems, reaReady } from "./reaLogic";
 
 interface SetupCardProps {
   unitName: string;
@@ -17,66 +17,6 @@ interface SetupCardProps {
   loading: boolean;
   install: InstallState;
   onRecheck: () => void;
-}
-
-function DoctorItem({ c, optional }: { c: ReaDoctorCheck; optional?: boolean }) {
-  const bad = !c.ok && !optional;
-  return (
-    <li className={`rea-doctor__item ${c.ok ? "is-ok" : bad ? "is-bad" : "is-optional"}`}>
-      <span className="rea-doctor__head">
-        {c.ok ? <CheckIcon className="rea-check__icon" /> : bad ? <XIcon className="rea-check__icon" /> : null}
-        <b>{c.name}</b>
-        {c.classification ? <Tag>{c.classification}</Tag> : null}
-      </span>
-      {c.detail ? <span className="rea-check__detail">{c.detail}</span> : null}
-      {!c.ok && c.remediation ? <span className={bad ? "rea-doctor__fix" : "rea-check__detail"}>{optional ? "To enable: " : "Fix: "}{c.remediation}</span> : null}
-    </li>
-  );
-}
-
-/** `rea doctor`, split so that only what the dashboard depends on can read "needs attention". */
-function DoctorSection({ id, checks }: { id: string; checks: ReaDoctorCheck[] }) {
-  const { core, engines, clients } = groupDoctorChecks(checks);
-  const healthy = core.every((c) => c.ok);
-  return (
-    <section aria-labelledby={id}>
-      <h4 className="rea-subtitle" id={id}>
-        Doctor checks <Tag tone={healthy ? "good" : "warn"}>{healthy ? "healthy" : "needs attention"}</Tag>
-      </h4>
-      <ul className="rea-doctor">
-        {core.map((c) => (
-          <DoctorItem key={c.name} c={c} />
-        ))}
-      </ul>
-      {engines.length ? (
-        <details className="rea-doctor__more">
-          <summary>
-            Optional analysis engines ({engines.filter((c) => c.ok).length} of {engines.length} set up)
-          </summary>
-          <p className="rea-faint">Not needed to run REA. Each one only unlocks the workflows that use it.</p>
-          <ul className="rea-doctor">
-            {engines.map((c) => (
-              <DoctorItem key={c.name} c={c} optional />
-            ))}
-          </ul>
-        </details>
-      ) : null}
-      {clients.length ? (
-        <details className="rea-doctor__more">
-          <summary>Agent-client registrations ({clients.length}, not used by the dashboard)</summary>
-          <p className="rea-faint">
-            These describe REA registering itself with AI clients such as Claude Code or Codex through <code>rea setup</code>. The dashboard runs REA
-            directly and never runs <code>rea setup</code>, so it does not edit those clients&apos; config files and these are expected to be missing.
-          </p>
-          <ul className="rea-doctor">
-            {clients.map((c) => (
-              <DoctorItem key={c.name} c={c} optional />
-            ))}
-          </ul>
-        </details>
-      ) : null}
-    </section>
-  );
 }
 
 function Check({ ok, label, detail }: { ok: boolean; label: string; detail?: string | null }) {
@@ -239,7 +179,26 @@ export function SetupCard({ unitName, setup, setupError, status, statusError, lo
         ) : null}
         <InstallOutput install={install} />
 
-        {status?.doctor ? <DoctorSection id={`${uid}-doctor`} checks={status.doctor.checks} /> : null}
+        {status?.doctor ? (
+          <section aria-labelledby={`${uid}-doctor`}>
+            <h4 className="rea-subtitle" id={`${uid}-doctor`}>
+              Doctor checks <Tag tone={status.doctor.healthy ? "good" : "warn"}>{status.doctor.healthy ? "healthy" : "needs attention"}</Tag>
+            </h4>
+            <ul className="rea-doctor">
+              {status.doctor.checks.map((c) => (
+                <li key={c.name} className={`rea-doctor__item ${c.ok ? "is-ok" : "is-bad"}`}>
+                  <span className="rea-doctor__head">
+                    {c.ok ? <CheckIcon className="rea-check__icon" /> : <XIcon className="rea-check__icon" />}
+                    <b>{c.name}</b>
+                    {c.classification ? <Tag>{c.classification}</Tag> : null}
+                  </span>
+                  {c.detail ? <span className="rea-check__detail">{c.detail}</span> : null}
+                  {!c.ok && c.remediation ? <span className="rea-doctor__fix">Fix: {c.remediation}</span> : null}
+                </li>
+              ))}
+            </ul>
+          </section>
+        ) : null}
 
         {status && status.providers.length ? (
           <section aria-labelledby={`${uid}-prov`}>

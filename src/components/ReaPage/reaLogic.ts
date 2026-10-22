@@ -1,6 +1,5 @@
 import type {
   ReaArgSpec,
-  ReaDoctorCheck,
   ReaExecClass,
   ReaResultShape,
   ReaRun,
@@ -70,26 +69,6 @@ export function installExitExplanation(code: number | null | undefined): string 
 }
 
 /** The unit has everything REA needs to start a run. */
-export interface DoctorGroups {
-  /** Checks that decide whether the dashboard can use REA on the unit (node, host, native modules, ...). */
-  core: ReaDoctorCheck[];
-  /** Optional analysis engines (Hopper, Ghidra, IDA). Missing ones only limit which workflows run. */
-  engines: ReaDoctorCheck[];
-  /** REA's own agent-client registrations and skill. The dashboard never runs `rea setup`, so these never apply. */
-  clients: ReaDoctorCheck[];
-}
-
-/** Split `rea doctor` output by whether it matters to the dashboard. */
-export function groupDoctorChecks(checks: readonly ReaDoctorCheck[]): DoctorGroups {
-  const g: DoctorGroups = { core: [], engines: [], clients: [] };
-  for (const c of checks) {
-    if (/^(registration|skill):/.test(c.name) || c.classification === "config_drift") g.clients.push(c);
-    else if (c.classification === "missing_analysis_engine") g.engines.push(c);
-    else g.core.push(c);
-  }
-  return g;
-}
-
 export function reaReady(status: ReaStatus | null | undefined): boolean {
   return Boolean(status && status.reachable && status.node.ok && status.npm && status.installed);
 }
