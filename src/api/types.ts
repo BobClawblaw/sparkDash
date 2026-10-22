@@ -1019,6 +1019,10 @@ export interface DecodeBenchConfig {
   maxTokens: number;
   /** Output-shape label only — not guided decoding / JSON schema. */
   promptType?: DecodeBenchPromptType;
+  /** Sampling temperature (default 0.7). Older runs have none: they ran at 0. */
+  temperature?: number;
+  /** Thinking on (default). Older runs have none: they ran with it off. */
+  thinking?: boolean;
   /** On-demand remote host (Tailscale HTTPS, etc.). */
   host?: string;
   tls?: boolean;
@@ -1138,6 +1142,8 @@ export interface DecodeBenchDefaults {
   maxMaxTokens: number;
   promptTypes: DecodeBenchPromptType[];
   defaultPromptType: DecodeBenchPromptType;
+  defaultTemperature?: number;
+  defaultThinking?: boolean;
 }
 
 export interface DecodeBenchListResponse {
@@ -1155,6 +1161,10 @@ export interface StartDecodeBenchRequest {
   modelId?: string | null;
   /** Output type: structured (default), prose, code, json. Prompt only. */
   promptType?: DecodeBenchPromptType;
+  /** 0–2, default 0.7. */
+  temperature?: number;
+  /** Default true. */
+  thinking?: boolean;
   /** On-demand remote LLM host (hostname or URL). Skips this Spark's LAN/SSH path. */
   host?: string;
   tls?: boolean;

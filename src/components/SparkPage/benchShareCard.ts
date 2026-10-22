@@ -8,6 +8,7 @@
  * function of the bench job, so every number and label is unit-testable
  * without a real canvas context.
  */
+import { decodeBenchSamplingLabel } from "./decodeSampling";
 import { formatDuration } from "../../shared/formatDuration";
 import { decodeBenchTypeLabel } from "../../shared/llmPrompts.js";
 import { backendLabel } from "../../shared/llmBackends.js";
@@ -298,7 +299,7 @@ export function buildDecodeShareCard(
     subtitle: shareCardSubtitle(src),
     chips: shareCardChips(src),
     status: shareCardStatus(job.status),
-    meta: `${decodeBenchTypeLabel(job.config?.promptType)} · ${job.config?.maxTokens ?? "?"} tok · ${
+    meta: `${decodeBenchTypeLabel(job.config?.promptType)} · ${job.config?.maxTokens ?? "?"} tok · ${decodeBenchSamplingLabel(job.config)} · ${
       concurrencies.length ? `${concurrencies.join(", ")} conc` : "—"
     }${job.durationMs != null ? ` · ${formatDuration(job.durationMs)}` : ""}`,
     columns: { load: "Load", primary: "Aggregate", secondary: "Stream" },

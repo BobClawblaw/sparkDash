@@ -161,7 +161,7 @@ describe("share card model", () => {
     expect(card.host).toBe("spark-38bd");
     expect(card.subtitle).toBe("Port 8888 · DeepSeek-v4.1-Flash-EXL3");
     expect(card.status).toEqual({ label: "COMPLETED", tone: "ok" });
-    expect(card.meta).toBe("Prose · 400 tok · 1, 2 conc · 27.8 s");
+    expect(card.meta).toBe("Prose · 400 tok · temp 0 · thinking off · 1, 2 conc · 27.8 s");
     expect(card.columns).toEqual({ load: "Load", primary: "Aggregate", secondary: "Stream" });
     expect(card.rows).toHaveLength(1);
     expect(card.rows[0]).toMatchObject({

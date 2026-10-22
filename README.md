@@ -68,6 +68,12 @@ Monitored units run **Linux**, **macOS**, or **Windows** (a Windows PC with an N
 
 ## Latest version changelog
 
+### Version 2.70.0
+- **Decode benchmark**: temperature (default 0.7) and, for the Prose type, thinking on or off are selectable; the copied result text and the share card show both.
+- **NVIDIA Flare** is detected and its tok/s monitored from `/metrics`.
+- **Tool Eval Bench**: compare a run on one Spark with a run from another, and expand the scenario list to a taller view.
+- **Overview** cards show CPU temperature and power; a **Cost compare** page prices fleet usage as any hosted model; Radiance and Strata engines are recognised.
+
 ### Version 2.50.0
 - **Tool Eval Bench: Show card** turns a finished result into a share image (score, rating, outcomes, safety warnings, categories) you can copy or save as a PNG.
 - **Tool Eval Bench: comparison card**: tick two runs in History and get one image of the change between them.

@@ -1489,6 +1489,8 @@ app.post("/api/sparks/:id/llm/bench", async (req, res) => {
       concurrencies: req.body?.concurrencies,
       maxTokens: req.body?.maxTokens,
       promptType: req.body?.promptType,
+      temperature: req.body?.temperature,
+      thinking: req.body?.thinking,
       debug: benchDebug,
       apiKey: target.apiKey,
       host: target.host,
