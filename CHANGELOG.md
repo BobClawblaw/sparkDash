@@ -23,6 +23,7 @@ Format: version sections are listed newest first.
 - **Turning off Keep after reboot preserves the displayed GPU cap.** Stopping the previous systemd service resets the clocks and deletes its cap marker. The non-persistent apply now restores the marker after re-applying the requested cap, so status still reports the live cap after the service is removed.
 - **GPU clock changes refuse inaccessible old markers before changing hardware.** After sudo permissions are narrowed, an old root-owned marker can no longer be cleaned up. Apply and Remove now check that before touching clocks or boot hooks, rather than changing the hardware and leaving status showing a stale cap.
 - **Failed fleet clock changes remain retryable.** A live-cap refresh matching the selected value no longer clears an unsuccessful boot-hook operation. Settings Save retries the outstanding change, preserving the requested Keep after reboot option; unsupported units are no longer counted as unreadable.
+- **Boot-hook transitions preserve clock status and user intent.** Switching from a user marker to the systemd marker clears the superseded copy. An installed hook can be unticked even when its daemon is unavailable, and Full capacity still removes stranded hooks on already-unlocked GPUs. Selecting a shared cap remains actionable when another unit could not be read. Delayed reboot jobs check their install token before attempting the cap or writing markers, so removing or replacing a sleeping job invalidates it.
 
 ---
 

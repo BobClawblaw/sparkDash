@@ -41,7 +41,7 @@ interface FleetGpuClockProps {
 
 /** What the Sparks report right now: one shared cap, a mix, or nothing readable. */
 type FleetNow =
-  | { kind: "same"; capMHz: number | null; units: number; unreadable: number }
+  | { kind: "same"; capMHz: number | null; units: number; unreadable: number; hasBootHooks: boolean }
   | { kind: "mixed"; caps: (number | null)[]; unreadable: number }
   | { kind: "unknown" };
 
@@ -141,7 +141,10 @@ export function FleetGpuClock({
       const first = caps[0];
       setNow(
         caps.every((cap) => cap === first)
-          ? { kind: "same", capMHz: first, units: caps.length, unreadable }
+          ? {
+              kind: "same", capMHz: first, units: caps.length, unreadable,
+              hasBootHooks: ready.some((status) => status.service.installed || status.cron.installed),
+            }
           : { kind: "mixed", caps, unreadable },
       );
     } catch {
@@ -157,7 +160,10 @@ export function FleetGpuClock({
   const shared = now?.kind === "same" ? now.capMHz : undefined;
   // Any pick on a mixed or unreadable fleet is a change: it is asking to unify it.
   // A pick whose last Save failed stays a change even where the fleet now matches it.
-  const pending = picked !== undefined && (unsettled || now?.kind !== "same" || picked !== shared);
+  const pending = picked !== undefined && (
+    unsettled || now?.kind !== "same" || now.unreadable > 0 || picked !== shared ||
+    (picked === null && now.hasBootHooks)
+  );
 
   useEffect(() => {
     onPendingChange?.(pending);

@@ -223,6 +223,26 @@ test("apply with the service: installs and enables the unit, which carries the c
   }
 });
 
+test("switching to a root-owned cap removes the fallback marker before service stop", () => {
+  const sb = sandbox();
+  try {
+    const home = path.join(sb.root, "home");
+    fs.mkdirSync(path.join(home, ".config/sparkdash"), { recursive: true });
+    const fallback = path.join(home, ".config/sparkdash/gpu-clock-cap");
+    fs.writeFileSync(fallback, `2100 ${sb.read("boot_id").trim()}\n`);
+    fs.writeFileSync(path.join(sb.bin, "id"), "#!/bin/sh\necho 0\n", { mode: 0o755 });
+    fs.writeFileSync(path.join(sb.bin, "install"), '#!/bin/sh\nwhile [ "$1" = "-m" ] || [ "$1" = "-o" ] || [ "$1" = "-g" ]; do shift 2; done\ncp "$1" "$2"\n', { mode: 0o755 });
+    const paths = { ...sb.paths, sandbox: false, systemctl: "systemctl" };
+    const env = { ...process.env, HOME: home };
+    assert.equal(sb.run(buildApplyProgram({ maxMHz: 1800, persist: true }, paths), { env }).RESULT, "ok");
+    sb.shell(`systemctl stop ${UNIT_NAME}`, env);
+    assert.equal(sb.lockText(), null);
+    assert.equal(sb.run(buildStatusProgram(paths), { env }).CAP, "");
+  } finally {
+    sb.cleanup();
+  }
+});
+
 test("switching the service off removes the unit and preserves the live cap in status after stop cleanup", () => {
   const sb = sandbox();
   try {
@@ -1292,4 +1312,101 @@ test("the password lock follows the account on the machine, not the registry ent
   await assert.rejects(wrong(mk("f", { ssh: { user: "u3", host: "10.0.0.10", port: 22 } })), (e) => e.status === 429, "global cap");
   t += 5 * 60_000 + 1;
   await assert.rejects(wrong(mk("f", { ssh: { user: "u3", host: "10.0.0.10", port: 22 } })), (e) => e.status === 403, "expired");
+});
+
+/** A reboot, then the installed @reboot line run with a fake sleep: before the job's
+ * Nth attempt it runs `hooks[N]` — what the dashboard might do during the boot wait —
+ * and logs `woke N`, so the calls the job itself makes afterwards can be told apart. */
+function rebootWithSleeps(sb, hooks = {}) {
+  fs.rmSync(path.join(sb.root, "lock"), { force: true });
+  sb.write("boot_id", "22222222-3333-4444-5555-666666666666\n");
+  for (const [n, program] of Object.entries(hooks)) sb.write(`onsleep${n}`, program);
+  const sleep = path.join(sb.bin, "fake-sleep");
+  fs.writeFileSync(
+    sleep,
+    `#!/bin/sh
+n=$(cat ${sb.root}/sleeps 2>/dev/null || echo 0); n=$((n + 1)); echo $n > ${sb.root}/sleeps
+[ -f ${sb.root}/onsleep$n ] && sh ${sb.root}/onsleep$n >/dev/null
+echo "woke $n" >> ${sb.root}/calls.log
+`,
+    { mode: 0o755 }
+  );
+  const line = sb.cronText().split("\n").find((l) => l.startsWith("@reboot"));
+  return sb.shell(line.replace(/^@reboot /, "").replaceAll("/bin/sleep 20", sleep));
+}
+
+test("an @reboot job whose line is dropped or replaced while it waits exits without touching the GPU or the markers", () => {
+  const boot2 = "22222222-3333-4444-5555-666666666666";
+  const cases = [
+    ["remove", (sb) => buildResetProgram(sb.paths), null],
+    ["apply without keep", (sb) => buildApplyProgram({ minMHz: 0, maxMHz: 2000, persist: false }, sb.paths), 2000],
+    ["apply another cap", (sb) => buildApplyProgram({ minMHz: 0, maxMHz: 2000, persist: true }, sb.paths), 2000],
+    // Same clocks, but a new install: the job that was waiting is still not the one in the crontab.
+    ["re-apply the same cap", (sb) => buildApplyProgram({ minMHz: 0, maxMHz: 1800, persist: true }, sb.paths), 1800],
+  ];
+  for (const [what, second, cap] of cases) {
+    const sb = sandbox({ narrowSudo: true, cron: true });
+    try {
+      sb.run(buildApplyProgram({ minMHz: 0, maxMHz: 1800, persist: true }, sb.paths));
+      const oldLine = sb.cronText();
+      rebootWithSleeps(sb, { 1: second(sb) });
+      assert.equal(sb.read("sleeps").trim(), "1", `${what}: the job stopped at its first wake`);
+      const after = sb.calls().split("woke 1\n")[1];
+      assert.doesNotMatch(after, /nvidia-smi|logger/, `${what}: the superseded job did not cap or log`);
+      assert.equal(sb.lockText(), cap === null ? null : `0,${cap}`, what);
+      assert.equal(sb.read(`run/${MARKER_FILE}`), cap === null ? null : `${cap} ${boot2}\n`, what);
+      assert.equal(sb.read(`run/${MARKER_FILE}.failed`), null, what);
+      assert.notEqual(sb.cronText(), oldLine, `${what}: the old line is gone`);
+      const status = sb.run(buildStatusProgram(sb.paths));
+      assert.equal(status.CAP, cap === null ? "" : String(cap), what);
+      assert.equal(status.CRON_FAILED, "0", what);
+    } finally {
+      sb.cleanup();
+    }
+  }
+});
+
+test("an @reboot job that failed every attempt writes no failure marker once Remove has dropped it", () => {
+  const sb = sandbox({ narrowSudo: true, cron: true });
+  try {
+    sb.run(buildApplyProgram({ minMHz: 0, maxMHz: 1800, persist: true }, sb.paths));
+    // At this boot nvidia-smi refuses every cap; Remove lands during the job's last attempt.
+    sb.write("onlgc3", buildResetProgram(sb.paths));
+    fs.writeFileSync(
+      path.join(sb.bin, "nvidia-smi"),
+      `#!/bin/sh
+echo "nvidia-smi $*" >> ${sb.root}/calls.log
+case "$1" in
+  --query-gpu=clocks.max.gr) echo 3003 ;;
+  -lgc) n=$(cat ${sb.root}/lgcs 2>/dev/null || echo 0); n=$((n + 1)); echo $n > ${sb.root}/lgcs
+        [ "$n" = 3 ] && sh ${sb.root}/onlgc3 >/dev/null
+        echo refused >&2; exit 4 ;;
+  -rgc) rm -f ${sb.root}/lock ;;
+esac
+`,
+      { mode: 0o755 }
+    );
+    rebootWithSleeps(sb);
+    assert.equal(sb.read("lgcs").trim(), "3", "all three attempts ran");
+    assert.equal(sb.cronText(), "");
+    assert.equal(sb.read(`run/${MARKER_FILE}.failed`), null, "no failure marker for a job that is no longer installed");
+    assert.doesNotMatch(sb.calls(), /^logger /m);
+    assert.equal(sb.run(buildStatusProgram(sb.paths)).CRON_FAILED, "0");
+  } finally {
+    sb.cleanup();
+  }
+});
+
+test("an @reboot job that cannot read the crontab while it waits still re-applies its cap", () => {
+  const sb = sandbox({ narrowSudo: true, cron: true });
+  try {
+    sb.run(buildApplyProgram({ minMHz: 0, maxMHz: 1800, persist: true }, sb.paths));
+    // A spool that cannot be read says nothing about which job is current: not superseded.
+    rebootWithSleeps(sb, { 1: `: > ${path.join(sb.root, "crontab.broken")}` });
+    assert.equal(sb.lockText(), "0,1800");
+    assert.equal(sb.read(`run/${MARKER_FILE}`), "1800 22222222-3333-4444-5555-666666666666\n");
+    assert.equal(sb.read(`run/${MARKER_FILE}.failed`), null);
+  } finally {
+    sb.cleanup();
+  }
 });

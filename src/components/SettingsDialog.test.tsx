@@ -3,6 +3,7 @@ import {
   fetchGpuClock,
   fetchSettings,
   fetchSparks,
+  resetFleetGpuClock,
   setFleetGpuClock,
   updateSettings,
 } from "../api/client";
@@ -171,5 +172,30 @@ describe("SettingsDialog fleet GPU clock and Save", () => {
     expect(setFleetGpuClock).toHaveBeenLastCalledWith(1800, true);
     expect(updateSettings).toHaveBeenCalledTimes(1);
     expect(onClose).toHaveBeenCalledTimes(1);
+  });
+  it("resets installed boot hooks when Full capacity is selected on already-unlocked GPUs", async () => {
+    vi.mocked(fetchGpuClock).mockResolvedValue({
+      ...READY,
+      capMHz: null,
+      cron: { installed: true, clocks: "0,1800", failed: true },
+    });
+    vi.mocked(resetFleetGpuClock).mockReset().mockResolvedValue({
+      success: true,
+      applied: 2,
+      results: [
+        { id: "spark1", ok: true, capMHz: null, persistKind: "none" },
+        { id: "spark2", ok: true, capMHz: null, persistKind: "none" },
+      ],
+    });
+    const { container } = render(<SettingsDialog open onClose={vi.fn()} onSaved={vi.fn()} />);
+    await settle();
+    byText(container, "Full capacity").click();
+    await settle();
+    const save = container.querySelector(".modal-sheet__footer .btn--primary") as HTMLButtonElement;
+    expect(save.disabled).toBe(false);
+    save.click();
+    await settle();
+    expect(resetFleetGpuClock).toHaveBeenCalledTimes(1);
+    expect(updateSettings).toHaveBeenCalledTimes(1);
   });
 });

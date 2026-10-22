@@ -32,18 +32,27 @@ export const CRON_TAG = "sparkdash-gpu-clock-cap";
  * because a boot invalidates it. It tries three times; when every attempt fails it
  * writes the boot id to a failure marker (and tries `logger`), which the status
  * program reports, so a boot that did not re-apply the cap is not silent.
+ * The job sleeps before each attempt, and an Apply or Remove made meanwhile does
+ * not stop it: so it carries a token unique to this install (`J=`) and, before
+ * capping and before writing either marker, checks that its own line is still
+ * in the crontab. A dropped or replaced line (even one with the same cap) means
+ * it was superseded and it exits touching nothing. A crontab it cannot read at
+ * all is not taken as superseded: that would lose the cap without a word.
  * Placeholders are filled by the program from paths it resolved on the unit and
  * checked with `safe_path`; `$(...)` runs at boot, not at install time.
  * No `%` may appear: crontab would read one as a newline.
  */
 function cronLine({ minMHz, maxMHz }) {
   return `${[
-    `@reboot ok=0; for i in 1 2 3; do /bin/sleep 20; @@SUDO@@ -n @@NV@@ -lgc ${minMHz},${maxMHz} && {`,
-    `/bin/mkdir -p "@@ALT_DIR@@" &&`,
-    `echo "${maxMHz} $(/bin/cat @@BOOTID@@)" > "@@ALT_MARKER@@" &&`,
-    `/bin/rm -f "@@ALT_FAIL@@" && ok=1 && break;`,
+    `@reboot J=@@JOB@@; C=@@CRON@@; D="@@ALT_DIR@@"; B=@@BOOTID@@; ok=0;`,
+    `cur() { L=$($C -l 2>&1) || { case $L in *"no crontab for"*) return 1 ;; esac; return 0; };`,
+    `case $L in *"@reboot J=$J; "*) return 0 ;; esac; return 1; };`,
+    `for i in 1 2 3; do /bin/sleep 20; cur || exit 0; @@SUDO@@ -n @@NV@@ -lgc ${minMHz},${maxMHz} && {`,
+    `cur || exit 0; /bin/mkdir -p "$D" &&`,
+    `echo "${maxMHz} $(/bin/cat $B)" > "$D/${MARKER_FILE}" &&`,
+    `/bin/rm -f "$D/${MARKER_FILE}.failed" && ok=1 && break;`,
     "}; done;",
-    `[ $ok = 1 ] || { /bin/mkdir -p "@@ALT_DIR@@"; /bin/cat @@BOOTID@@ > "@@ALT_FAIL@@";`,
+    `[ $ok = 1 ] || { cur || exit 0; /bin/mkdir -p "$D"; /bin/cat $B > "$D/${MARKER_FILE}.failed";`,
     `logger -t sparkdash "GPU clock cap ${maxMHz} MHz was not applied at boot"; true; }`,
     `# ${CRON_TAG}`,
   ].join(" ")}\n`;
@@ -380,8 +389,11 @@ export function buildApplyProgram({ minMHz, maxMHz, persist }, overrides = {}) {
     'if [ "$HOOK" = cron ]; then',
     '  SUDO_BIN=$(command -v sudo 2>/dev/null || true)',
     '  [ -n "$SUDO_BIN" ] || fail no-sudo "sudo was not found on this unit"',
-    '  for P in "$SUDO_BIN" "$NV" "$ALT_DIR" "$ALT_MARKER" "$ALT_FAIL" "$BOOTID_FILE"; do',
-    '    safe_path "$P" || fail cron-failed "a path the @reboot job needs (sudo, nvidia-smi or the home directory) has characters that cannot be put in a crontab safely; nothing was changed"',
+    // The token that tells this install's job from any later one (see cronLine).
+    '  JOB=$(od -An -N8 -tx1 /dev/urandom 2>/dev/null | tr -dc 0-9a-f)',
+    '  [ ${#JOB} = 16 ] || fail cron-failed "could not prepare the @reboot job; nothing was changed"',
+    '  for P in "$SUDO_BIN" "$NV" "$CRONBIN" "$ALT_DIR" "$ALT_MARKER" "$ALT_FAIL" "$BOOTID_FILE"; do',
+    '    safe_path "$P" || fail cron-failed "a path the @reboot job needs (sudo, nvidia-smi, crontab or the home directory) has characters that cannot be put in a crontab safely; nothing was changed"',
     '  done',
     'fi',
     'if [ "$HOOK" = cron ] && [ -f "$UNIT" ]; then fail service-failed "a boot service this unit cannot remove without NOPASSWD: ALL is still installed and would re-apply its own cap at every boot; nothing was changed"; fi',
@@ -393,8 +405,12 @@ export function buildApplyProgram({ minMHz, maxMHz, persist }, overrides = {}) {
     'write_marker() {',
     '  B=$(bootid); [ -n "$B" ] || return 1',
     '  if can_sudo_root; then',
-    '    $SUDO sh -c \'mkdir -p "$1" && chmod 755 "$1" && echo "$2 $3" > "$4"\' sh "$RUNDIR" "$MAX" "$B" "$MARKER"',
-    '    return $?',
+    '    $SUDO sh -c \'mkdir -p "$1" && chmod 755 "$1" && echo "$2 $3" > "$4"\' sh "$RUNDIR" "$MAX" "$B" "$MARKER" || return 1',
+    // A later service stop only removes the root marker; do not resurrect a superseded user cap.
+    '    if [ "$MARKER" != "$ALT_MARKER" ]; then',
+    '      rm -f "$ALT_MARKER" 2>/dev/null || $SUDO rm -f "$ALT_MARKER" 2>/dev/null || return 1',
+    '    fi',
+    '    return 0',
     '  fi',
     '  [ -n "$HOMEDIR" ] || return 1',
     '  mkdir -p "$ALT_DIR" 2>/dev/null || return 1',
@@ -458,14 +474,15 @@ export function buildApplyProgram({ minMHz, maxMHz, persist }, overrides = {}) {
     "  cat > \"$D/cron\" <<'SPARKDASH_CRON_EOF'",
     cron.replace(/\n$/, ""),
     "SPARKDASH_CRON_EOF",
-    '  CRON_LINE=$(sed "s#@@SUDO@@#$SUDO_BIN#g; s#@@NV@@#$NV#g; s#@@ALT_DIR@@#$ALT_DIR#g; s#@@ALT_MARKER@@#$ALT_MARKER#g; s#@@ALT_FAIL@@#$ALT_FAIL#g; s#@@BOOTID@@#$BOOTID_FILE#g" "$D/cron") || fail cron-failed "could not prepare the @reboot job"',
+    '  CRON_LINE=$(sed "s#@@JOB@@#$JOB#g; s#@@CRON@@#$CRONBIN#g; s#@@SUDO@@#$SUDO_BIN#g; s#@@NV@@#$NV#g; s#@@ALT_DIR@@#$ALT_DIR#g; s#@@BOOTID@@#$BOOTID_FILE#g" "$D/cron") || fail cron-failed "could not prepare the @reboot job"',
     '  T=$(mktemp) || fail cron-failed "could not create a temporary file"',
     '  cron_text | grep -v "$CRON_RE" > "$T"',
     "  printf '%s\\n' \"$CRON_LINE\" >> \"$T\"",
     '  "$CRONBIN" "$T" >/dev/null 2>&1 || { rm -f "$T"; fail cron-failed "could not add the @reboot job; the cap applies until the next reboot"; }',
     '  rm -f "$T"',
     // Crontab implementations rewrite what they store: read back what is really there.
-    '  if ! cron_load || ! cron_has || [ "$(cron_clocks)" != "$MIN,$MAX" ]; then',
+    // The job finds itself by its token, so a line without it is not this install.
+    '  if ! cron_load || ! cron_has || [ "$(cron_clocks)" != "$MIN,$MAX" ] || ! cron_text | grep -q "^@reboot J=$JOB; "; then',
     '    drop_cron',
     '    fail cron-failed "the @reboot job did not install; the cap applies until the next reboot"',
     '  fi',

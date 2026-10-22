@@ -120,6 +120,23 @@ describe("GpuClockSection", () => {
     expect(setGpuClock).toHaveBeenCalledWith("lab", { maxMHz: 1800, persist: true });
     expect(container.textContent).toContain("kept after reboot by an @reboot cron job");
   });
+  it("allows an unavailable installed boot hook to be unticked and removed by Apply", async () => {
+    vi.mocked(fetchGpuClock).mockResolvedValue({
+      ...base,
+      capMHz: 1800,
+      persistKind: "none",
+      cron: { installed: true, clocks: "0,1800", failed: false },
+    });
+    const { container } = render(<GpuClockSection sparkId="lab" />);
+    await flush();
+    const box = container.querySelector('input[type="checkbox"]') as HTMLInputElement;
+    expect(box.checked).toBe(true);
+    expect(box.disabled).toBe(false);
+    act(() => box.click());
+    await act(async () => byText(container, "Apply").click());
+    expect(setGpuClock).toHaveBeenCalledWith("lab", { maxMHz: 1800, persist: false });
+  });
+
 
   it("warns when the @reboot job ran at this boot and could not re-apply the cap", async () => {
     const failedStatus = (failed: boolean): GpuClockStatus => ({

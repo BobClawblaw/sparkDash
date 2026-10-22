@@ -353,6 +353,18 @@ describe("FleetGpuClock", () => {
     expect(byText(container, "2100 MHz").className).toContain("is-current");
   });
 
+  it("keeps a matching cap pending when another unit could not be read", async () => {
+    statusApi.mockImplementation(async (id) => {
+      if (id === "spark2") throw new Error("offline");
+      return ready(1800);
+    });
+    const ref = { current: null as FleetGpuClockApi | null };
+    const { container } = render(<FleetGpuClock apiRef={ref} />);
+    await settle();
+    await click(byText(container, "1800 MHz"));
+    expect(ref.current!.pending()).toBe(true);
+  });
+
   it("leaves the states usable, not 'Reading the fleet…', when every read hangs", async () => {
     statusApi.mockImplementation(() => hang());
     vi.useFakeTimers();

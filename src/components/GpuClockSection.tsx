@@ -235,7 +235,7 @@ export function GpuClockSection({ sparkId }: { sparkId: string }) {
           type="checkbox"
           checked={persist}
           onChange={(e) => setPersist(e.target.checked)}
-          disabled={busy || cannotPersist}
+          disabled={busy || (cannotPersist && !persist)}
         />
         Keep after reboot (
         {cannotPersist
