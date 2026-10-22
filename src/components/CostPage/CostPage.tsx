@@ -281,7 +281,8 @@ export function CostPage() {
           </div>
         ) : prices && prices.models.length === 0 ? (
           <div className="panel tk-note" role="status">
-            <b>No prices loaded.</b> The price catalog came back empty — retry in a moment.
+            <b>No price data yet.</b> Enable MODEL_PRICES_FETCH or supply a catalog at MODEL_PRICES_JSON_PATH, then retry.
+            <button type="button" className="btn btn--sm" onClick={() => setTick((t) => t + 1)}>Retry</button>
           </div>
         ) : prices ? (
           <div className="panel tk-note" role="status">Choose a hosted model to compare costs.</div>

@@ -10,6 +10,7 @@ Format: version sections are listed newest first.
 ## [Unreleased]
 
 ### Fixed
+- **Cost compare on a fresh install shows a neutral empty catalog** when fetching is disabled and no catalog exists, with setup guidance and Retry. Failed enabled fetches still report an error. Reported by @Nipale-ai (#269).
 - **Cost compare requires a hosted-model choice.** Fresh browsers and removed catalog entries no longer silently price usage as the alphabetically first model. USD prices and context grouping use a consistent US locale. Reported by @Nipale-ai (#268).
 
 ### Changed
