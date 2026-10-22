@@ -540,6 +540,13 @@ export class LlmProbe {
             /* body optional for detection */
           }
         }
+        // llama-server's OpenAI card says owned_by "llamacpp"; its tok/s lives in /slots,
+        // so don't let a first contact that missed /slots lock it in as vLLM.
+        if (typeof owned === "string" && /^llama\.?cpp$/i.test(owned)) {
+          this.serverIsOpenAI = false;
+          this.backendType = "llama.cpp";
+          return;
+        }
         this.backendType = await this._classifyOpenAIBackend(owned, flareCard);
         return;
       }
