@@ -68,10 +68,6 @@ import { registerToolEvalRoutes } from "./tooleval/routes.js";
 import { VulnHuntStore } from "./vulnhunt/VulnHuntStore.js";
 import { VulnHuntManager } from "./vulnhunt/VulnHuntManager.js";
 import { registerVulnHuntRoutes } from "./vulnhunt/routes.js";
-import { ReaStore } from "./rea/ReaStore.js";
-import { ReaManager } from "./rea/ReaManager.js";
-import { registerReaRoutes } from "./rea/routes.js";
-import { registerReaUploadRoutes } from "./rea/uploads.js";
 import { benchEvent } from "./events/eventFormat.js";
 import {
   createFleetEnergyRuntime,
@@ -409,28 +405,6 @@ const vulnHuntManager = new VulnHuntManager({
 });
 const allowVulnHunt = createRateLimiter(30, 60_000);
 
-// ─── REA (Tools): reverse engineering on a unit ──
-const reaStore = new ReaStore({
-  file: process.env.REA_RUNS_PATH || path.join(ROOT, "config", "rea-runs.json"),
-  resultsDir: process.env.REA_RESULTS_DIR || path.join(ROOT, "config", "rea-results"),
-});
-const reaManager = new ReaManager({
-  store: reaStore,
-  onEvent: (event) => recordEvent(event),
-});
-const allowRea = createRateLimiter(30, 60_000);
-const allowReaUpload = createRateLimiter(10, 60_000);
-// Uploads that were never used are removed from the unit after 24 h (best effort, hourly, only when REA is on).
-const reaUploadSweep = setInterval(() => {
-  if (getSettings().reaEnabled !== true) return;
-  for (const { id } of registry.sparks) {
-    const unit = registry.getSpark(id);
-    if (!unit?.online || (unit.platform && unit.platform !== "linux")) continue;
-    reaManager.sweepUploads(unit).catch(() => {});
-  }
-}, 60 * 60 * 1000);
-reaUploadSweep.unref();
-
 // ─── Monitor map ─────────────────────────────────────────
 const monitors = new Map();
 
@@ -512,19 +486,6 @@ const alertsRuntime = createAlertsRuntime({
 // ─── Express app ─────────────────────────────────────────
 const app = express();
 const server = createServer(app);
-
-// REA uploads stream raw bytes, so they are mounted before the JSON body parser. They apply the same auth
-// middleware (host guard + token) per route; registering them without it throws at boot.
-const reaDeps = {
-  registry,
-  manager: reaManager,
-  store: reaStore,
-  allowRun: allowRea,
-  allowUpload: allowReaUpload,
-  principalKey,
-  rejectLimited,
-};
-registerReaUploadRoutes(app, { ...reaDeps, authMiddleware: createAuthMiddleware() });
 
 app.use(express.json());
 // Registered ahead of the auth middleware: a remote browser holding no token
@@ -759,7 +720,6 @@ app.delete("/api/sparks/:id", (req, res) => {
     unitHistory.remove(req.params.id);
     toolEvalManager.removeSpark(req.params.id);
     vulnHuntManager.removeSpark(req.params.id);
-    reaManager.removeSpark(req.params.id);
     recordEvent({
       type: "spark.removed",
       severity: "info",
@@ -873,8 +833,6 @@ registerToolEvalRoutes(app, {
   principalKey,
   rejectLimited,
 });
-
-registerReaRoutes(app, reaDeps);
 
 registerVulnHuntRoutes(app, {
   registry,
@@ -2469,7 +2427,6 @@ async function shutdown(signal) {
     launcherManager.shutdown();
     toolEvalManager.shutdown();
     vulnHuntManager.shutdown();
-    reaManager.shutdown();
   } catch (err) {
     console.error("[sparkDash] failed to stop launcher watchers:", err.message);
   }

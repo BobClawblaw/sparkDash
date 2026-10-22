@@ -51,5 +51,3 @@ config/metrics-history.json.corrupt-*
 config/fleet-energy.scope-*.json
 config/*.tmp
 config/*.json.*.tmp
-config/rea-runs.json
-config/rea-results/

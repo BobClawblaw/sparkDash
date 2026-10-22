@@ -1,9 +1,0 @@
-{
-  "name": "sparkdash-rea",
-  "private": true,
-  "version": "1.0.0",
-  "description": "sparkDash-managed install of rea-agents (pinned; see server/rea/commands.js)",
-  "dependencies": {
-    "rea-agents": "6.4.0"
-  }
-}

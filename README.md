@@ -44,7 +44,6 @@ Monitored units run **Linux**, **macOS**, or **Windows** (a Windows PC with an N
 - [Glance integration](#glance-integration)
 - [Quality bench](#quality-bench)
 - [Security scans (VulnHunter)](#security-scans-vulnhunter)
-- [Reverse engineering (REA)](#reverse-engineering-rea)
 - [Prometheus](#prometheus)
 - [Alert notifications](#alert-notifications)
 - [RoCE / RDMA monitoring](#roce--rdma-monitoring)
@@ -140,7 +139,6 @@ Full history: [CHANGELOG.md](./CHANGELOG.md)
 | **Prefill benchmark** | Context-size sweep (1k–300k) of prefill tok/s and TTFT; unique prefix per size; persisted last run. Same remote targeting as decode |
 | **Quality benchmark** | Fixed, seeded quality suite (QA, reasoning, arithmetic, state tracking, GSM8K, MMLU, plus optional instruction following and long-context recall) at temperature 0; per-category and overall score; last 30 runs kept; paired compare with McNemar p-value. Same remote targeting as decode |
 | **Security scans** | **Benchmarks → VulnHunter**: install and run [VulnHunter](https://github.com/nealbridges/VulnHunter), an agentic source-code security scanner, on a unit against a git URL or a checkout there. Detached on the unit, live output, parsed report (findings, severity, CWE, exploit-test status), history. Opt-in setup on the unit; see [Security scans](#security-scans-vulnhunter) |
-| **Reverse engineering** | **Tools → REA**: install and run [REA](https://github.com/morluto/rea) on a unit: native binaries, JavaScript/Electron apps, .NET, APKs, firmware, captures and more, from a path on the unit or a file/folder uploaded from the browser. Opt-in; see [Reverse engineering (REA)](#reverse-engineering-rea) |
 | **Prompt Showcase** | Full-page multi-terminal LLM streaming demo (up to 32 prompts) with live tok/s and copy-out |
 | **LLM inference health** | KV cache free/pool (vLLM `cache_config_info` token and byte size; usage % when the pool size is absent), run/wait queue, TTFT/E2E/ITL p95, preemptions, prefix cache, MTP accept from Prometheus `/metrics` (vLLM and q27; q27 FIFO-queues so the Requests tile reads “N run” without a wait gauge) |
 | **Multiple LLM ports** | Monitor several LLM servers on different ports simultaneously — each gets its own panel with independent backend detection and metrics |
@@ -468,25 +466,6 @@ For Claude Code and Codex the wrapper enforces read-only scans with the CLI's ow
 The page credits and links the VulnHunter project (maintained by Neal Bridges, a fork of Capital One's VulnHunter, Apache-2.0).
 
 Runs are kept in `config/vulnhunt-runs.json` (up to 100) and `config/vulnhunt-results/` (both git-ignored); move them with `VULNHUNT_RUNS_PATH` and `VULNHUNT_RESULTS_DIR`. Linux units only.
-
-## Reverse engineering (REA)
-
-**Tools → REA** installs and drives [REA](https://github.com/morluto/rea) (npm `rea-agents`, MIT, by morluto, *Reverse Engineer Anything*) on one of your units and shows what it finds. REA is a CLI and an MCP server; sparkDash uses the CLI only, the same way Tool Eval and VulnHunter drive theirs: runs happen **detached on the unit** (closing the browser or restarting sparkDash does not stop them), output streams live, and results are cached here.
-
-**Turn it on and set it up.** REA is an opt-in setting (**Settings → REA**, or the **Turn on REA** button on its page), off by default. Then **Install REA** does a pinned, reproducible install on the unit: `rea-agents@6.4.0` from a checked-in lockfile with an integrity hash for every package (`npm ci --ignore-scripts`, into `~/.local/share/sparkdash/rea/6.4.0`, staged and smoke-tested before it is activated). It needs Node 22.19+/24.11+/26+ and npm on the unit; sparkDash never upgrades them and never runs REA's own `setup` (which edits agent client configs). The readiness card shows REA's own `doctor` checks and which optional engines it found (Ghidra, Hopper, IDA, JADX, apktool, binwalk, unblob, adb, JEB): engines are detected, never installed, and the card says what each one unlocks.
-
-**Pick a target and a workflow.** The target is a path on the unit (inside the unit user's home) or an upload: drop files, a folder, or a `.zip`/`.tar`/`.tar.gz` archive. Uploads stream to `~/.cache/sparkdash/rea/uploads` on the unit with size and file-count limits, are committed atomically, archives are checked (no absolute or `..` entries, links, devices, zip bombs) and extracted there, and are removed after 24 h or when you delete them. The catalog lists every REA 6.4.0 command that makes sense as a one-shot action, grouped by family (JavaScript/Electron, .NET, native binaries, layout and diagnostics, Android, Apple, firmware, evidence, captures, process and browser runtime, adb) and built from the real CLI, not the docs.
-
-**Results.** A summary, identity, findings, limitations and unknowns, and paged views served by REA's own `inspect-analysis-view` (modules of JavaScript applications, sections and symbols plus facets of layout results, facets of native functions), so a result of hundreds of MB never reaches the browser. Large results stay on the unit; the page asks for pages on demand. Export downloads the run's result as JSON. Compare wraps two runs' Evidence records into bundles on the unit with REA's own bundle builder and runs `rea compare`. All of it is shown as plain text.
-
-**Safety**
-- **Opt-in, and who can use it.** Once on, anyone who can reach the dashboard API can install REA and run analyses on your units as their SSH user; set `SPARKDASH_TOKEN` if others can. Every run needs an "I am authorized to analyze this target" confirmation, kept on the run record.
-- **Not a sandbox.** REA and its providers parse untrusted bytes as the unit's user. Treat unknown binaries like any malware-analysis target: use a unit or user you can afford to lose.
-- **Workflows that run or touch the target** (process capture, browser/Electron/JS/native runtime observation, anything that launches the target or contacts a network) need a separate per-run confirmation and are labelled in red. The classification is derived server-side from the catalog, not from the request. Workflows that change an Android device (install, uninstall, push, start, stop) are refused unless the server sets `REA_ENABLE_DEVICE_WRITES=1`.
-- **Responsible use.** REA ships its own [DISCLAIMER](https://github.com/morluto/rea/blob/main/DISCLAIMER.md): analyze only software you are authorized to examine, and respect licences and laws. The page links it.
-- Paths are checked on the unit with both sides resolved inside the user's home; results and uploads are never read through symlinks; run files are private (umask 077); a run has one time limit for all stages, a bounded log and a capped result (`result.json` larger than 256 MiB fails with a clear error).
-
-Runs are kept in `config/rea-runs.json` (up to 100) and `config/rea-results/` (git-ignored; move with `REA_RUNS_PATH` / `REA_RESULTS_DIR`). Limits: `REA_UPLOAD_MAX_BYTES` (1 GiB), `REA_UPLOAD_MAX_FILES` (5000), `REA_EXPORT_MAX_BYTES` (256 MiB). Linux units only. To move to another REA version, update the pin in `server/rea/pinned/` (package.json, lockfile) and `REA_VERSION` in `server/rea/commands.js` together.
 
 ## Prometheus
 
@@ -1239,7 +1218,6 @@ The [`sparkdash-dgx-cluster`](https://github.com/glanceapp/community-widgets/tre
 **Projects and data sparkDash builds on**
 - [tool-eval-bench](https://github.com/SeraphimSerapis/tool-eval-bench) by SeraphimSerapis (MIT) powers **Tool Eval Bench**. It adapts the scenario methodology of ToolCall-15 by stevibe (MIT) and credits the Typed Decisions dataset from the LocalLLaMA organization (Apache 2.0).
 - **GSM8K** (OpenAI, MIT) and **MMLU** (Dan Hendrycks, MIT) supply the maths and knowledge questions in the Quality bench. The instruction-following category is inspired by **IFEval** (Zhou et al., Google).
-- [REA](https://github.com/morluto/rea) (MIT) by morluto is installed and run on your own unit when you use Tools → REA. sparkDash drives its CLI only and does not bundle any of its code; the pinned lockfile in `server/rea/pinned/` lists the npm packages it installs.
 - [VulnHunter](https://github.com/nealbridges/VulnHunter) (Apache-2.0; a maintained fork of [Capital One's VulnHunter](https://github.com/capitalone/VulnHunter)) is the scanner behind **Security scans**. sparkDash only calls its `vh` CLI on your unit; no VulnHunter code is bundled.
 - [Hermes Agent](https://github.com/nousresearch/hermes-agent) by Nous Research can be monitored and updated from sparkDash.
 - The health findings were inspired by [spark-doctor](https://github.com/joeynyc/spark-doctor) by joeynyc (MIT). No code from it is used.

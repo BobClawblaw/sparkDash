@@ -19,10 +19,9 @@ import {
 import { CSS } from "@dnd-kit/utilities";
 import type { AuthMode, SparkSnapshot } from "../../api/types";
 import { isWorkerSpark } from "../../api/sparkRole";
-import { ACTIVITY_ID, COST_ID, ENERGY_ID, OVERVIEW_ID, SHOWCASE_ID, TEMPS_ID, TOKENS_ID, benchId, idToPath, toolId } from "../../constants";
+import { ACTIVITY_ID, COST_ID, ENERGY_ID, OVERVIEW_ID, SHOWCASE_ID, TEMPS_ID, TOKENS_ID, benchId, idToPath } from "../../constants";
 import { BENCH_TYPES } from "../bench/benchCatalog";
-import { TOOL_TYPES } from "../tools/toolsCatalog";
-import { BoltIcon, ChevronDownIcon, CoinsIcon, GearIcon, GithubIcon, GlobeIcon, GridIcon, ListIcon, MicroscopeIcon, PanelLeftIcon, PlusIcon, SearchIcon, TerminalIcon, ThermometerIcon, TokensIcon, XLogoIcon } from "../ui/icons";
+import { BoltIcon, ChevronDownIcon, CoinsIcon, GearIcon, GithubIcon, GlobeIcon, GridIcon, ListIcon, PanelLeftIcon, PlusIcon, SearchIcon, TerminalIcon, ThermometerIcon, TokensIcon, XLogoIcon } from "../ui/icons";
 import { OpenAccessChip } from "../OpenAccessChip";
 import { ThemeSwitch } from "../ThemeSwitch";
 import { isThrottling, railSubLabel } from "./sparkSummary";
@@ -38,9 +37,6 @@ interface AppSidebarProps {
   /** Benchmark type whose page is showing, if any. */
   benchType?: string | null;
   onSelectBench?: (type: string) => void;
-  /** Tool type whose page is showing, if any. */
-  toolType?: string | null;
-  onSelectTool?: (type: string) => void;
   connected: boolean;
   /** Poll interval in ms for the footer caption. */
   refreshInterval?: number | null;
@@ -178,8 +174,6 @@ export function AppSidebar({
   onOpenSearch,
   benchType = null,
   onSelectBench,
-  toolType = null,
-  onSelectTool,
   connected,
   refreshInterval,
   authMode = null,
@@ -198,23 +192,6 @@ export function AppSidebar({
     setBenchOpen((open) => {
       try {
         localStorage.setItem("sparkdash.sidebar.benchOpen", open ? "0" : "1");
-      } catch {
-        /* private mode */
-      }
-      return !open;
-    });
-
-  const [toolsOpen, setToolsOpen] = useState(() => {
-    try {
-      return localStorage.getItem("sparkdash.sidebar.toolsOpen") !== "0";
-    } catch {
-      return true;
-    }
-  });
-  const toggleTools = () =>
-    setToolsOpen((open) => {
-      try {
-        localStorage.setItem("sparkdash.sidebar.toolsOpen", open ? "0" : "1");
       } catch {
         /* private mode */
       }
@@ -401,37 +378,6 @@ export function AppSidebar({
           </a>
         </nav>
       </div>
-
-      {onSelectTool ? (
-        <div>
-          <button
-            type="button"
-            className="rail-label rail-label--toggle"
-            onClick={toggleTools}
-            aria-expanded={toolsOpen || toolType != null}
-            aria-controls="rail-tools"
-          >
-            <span>Tools</span>
-            <ChevronDownIcon className={`h-3 w-3 transition-transform ${toolsOpen || toolType != null ? "" : "-rotate-90"}`} />
-          </button>
-          <nav className="rail-list" id="rail-tools" aria-label="Tools" hidden={!(toolsOpen || toolType != null)}>
-            {TOOL_TYPES.map((t) => (
-              <div key={t.id}>
-                <a
-                  href={idToPath(toolId(t.id))}
-                  className={`rail-item rail-item--compact ${toolType === t.id ? "is-active" : ""}`}
-                  onClick={inApp(() => onSelectTool(t.id))}
-                  aria-current={toolType === t.id ? "page" : undefined}
-                  title={t.blurb}
-                >
-                  <MicroscopeIcon className="h-3.5 w-3.5" />
-                  <span className="rail-item__name">{t.label}</span>
-                </a>
-              </div>
-            ))}
-          </nav>
-        </div>
-      ) : null}
 
       {onSelectBench ? (
         <div>

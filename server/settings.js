@@ -69,8 +69,6 @@ const DEFAULTS = Object.freeze({
   intelVramSudo: false,
   /** VulnHunter scans, installs and harness-command changes (they run an agent on a unit). Opt-in, off by default. */
   vulnhuntEnabled: false,
-  /** REA (Tools): install, uploads and analysis runs on a unit. Opt-in, off by default. */
-  reaEnabled: false,
   /**
    * Keep 48 h of 1-minute and 30 days of 15-minute history per unit (GPU, memory
    * headroom, CPU, RAM, network, LLM tok/s and KV) for the unit page. Off by
@@ -152,7 +150,6 @@ function _clampSettings(settings) {
   s.prometheusExport = Boolean(s.prometheusExport);
   s.intelVramSudo = Boolean(s.intelVramSudo);
   s.vulnhuntEnabled = Boolean(s.vulnhuntEnabled);
-  s.reaEnabled = Boolean(s.reaEnabled);
   s.metricsHistory = Boolean(s.metricsHistory);
   s.alertsEnabled = Boolean(s.alertsEnabled);
   // Ensure temperatureUnit is valid

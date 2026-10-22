@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { ENERGY_ID, OVERVIEW_ID, TEMPS_ID, TOOLS_PREFIX, benchId, benchTypeOf, idToPath, initialActiveId, isPageId, isStaleSparkId, pathToId, toolId, toolTypeOf } from "./constants";
+import { ENERGY_ID, OVERVIEW_ID, TEMPS_ID, benchId, benchTypeOf, idToPath, initialActiveId, isPageId, isStaleSparkId, pathToId } from "./constants";
 
 describe("route helpers", () => {
   it("round-trips ids and paths", () => {
@@ -22,31 +22,6 @@ describe("route helpers", () => {
     expect(isStaleSparkId(benchId("vulnhunt"), [], true)).toBe(false);
   });
 
-  it("tool pages round-trip through ids and /tools/<type> paths", () => {
-    expect(toolId("rea")).toBe(`${TOOLS_PREFIX}rea`);
-    expect(toolTypeOf(toolId("rea"))).toBe("rea");
-    expect(toolTypeOf(benchId("rea"))).toBeNull();
-    expect(benchTypeOf(toolId("rea"))).toBeNull();
-    expect(toolTypeOf(null)).toBeNull();
-    expect(idToPath(toolId("rea"))).toBe("/tools/rea");
-    expect(pathToId("/tools/rea")).toBe(toolId("rea"));
-    expect(pathToId("/tools/rea/")).toBe(toolId("rea"));
-    expect(pathToId(idToPath(toolId("some-new-tool")))).toBe(toolId("some-new-tool"));
-    expect(isPageId(toolId("rea"))).toBe(true);
-    expect(isPageId("rea")).toBe(false);
-  });
-
-  it("an unknown tool type still resolves to a tool id (the page says Unknown tool); bare /tools is the Overview", () => {
-    expect(pathToId("/tools/nope")).toBe(toolId("nope"));
-    expect(pathToId("/tools")).toBe(OVERVIEW_ID);
-    expect(pathToId("/tools/a/b")).toBe(OVERVIEW_ID);
-  });
-
-  it("tool ids are never stale Spark ids", () => {
-    expect(isStaleSparkId(toolId("rea"), [], true)).toBe(false);
-    expect(isStaleSparkId(toolId("nope"), ["a"], true)).toBe(false);
-  });
-
   describe("initialActiveId", () => {
     afterEach(() => vi.unstubAllGlobals());
     it("reads the deep link synchronously, so /energy never starts on the Overview", () => {
@@ -56,11 +31,6 @@ describe("route helpers", () => {
       expect(initialActiveId()).toBe(benchId("vulnhunt"));
       vi.stubGlobal("location", { pathname: "/spark/alpha" });
       expect(initialActiveId()).toBe("alpha");
-    });
-    it("a reload on /tools/rea lands on the tool, never the Overview", () => {
-      vi.stubGlobal("location", { pathname: "/tools/rea" });
-      expect(initialActiveId()).toBe(toolId("rea"));
-      expect(isStaleSparkId(initialActiveId(), [], true)).toBe(false);
     });
     it("falls back to the Overview for showcase paths or a missing pathname", () => {
       vi.stubGlobal("location", { pathname: "/showcase/alpha" });
