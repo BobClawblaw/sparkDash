@@ -173,6 +173,46 @@ describe("SettingsDialog fleet GPU clock and Save", () => {
     expect(updateSettings).toHaveBeenCalledTimes(1);
     expect(onClose).toHaveBeenCalledTimes(1);
   });
+  it("keeps a same-frequency persistence change retryable before saving settings", async () => {
+    vi.mocked(fetchGpuClock).mockResolvedValue({
+      ...READY,
+      service: { installed: true, clocks: "0,2100", enabled: "enabled", active: "active" },
+    });
+    const onClose = vi.fn();
+    const { container } = render(<SettingsDialog open onClose={onClose} onSaved={vi.fn()} />);
+    await settle();
+    const save = container.querySelector(".modal-sheet__footer .btn--primary") as HTMLButtonElement;
+    expect(save.disabled).toBe(true);
+
+    (container.querySelector('.set-fleetcap input[type="checkbox"]') as HTMLInputElement).click();
+    await settle();
+    expect(save.disabled).toBe(false);
+    vi.mocked(setFleetGpuClock).mockResolvedValue({
+      success: false, applied: 0,
+      results: [{ id: "spark1", ok: false, error: "could not remove the boot service" }],
+    });
+    save.click();
+    await settle();
+    expect(setFleetGpuClock).toHaveBeenCalledWith(2100, false);
+    expect(updateSettings).not.toHaveBeenCalled();
+    expect(onClose).not.toHaveBeenCalled();
+    expect(save.disabled).toBe(false);
+
+    vi.mocked(fetchGpuClock).mockResolvedValue(READY);
+    vi.mocked(setFleetGpuClock).mockResolvedValue({
+      success: true, applied: 2,
+      results: [
+        { id: "spark1", ok: true, capMHz: 2100, persistKind: "none" },
+        { id: "spark2", ok: true, capMHz: 2100, persistKind: "none" },
+      ],
+    });
+    save.click();
+    await settle();
+    expect(setFleetGpuClock).toHaveBeenCalledTimes(2);
+    expect(updateSettings).toHaveBeenCalledTimes(1);
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
   it("resets installed boot hooks when Full capacity is selected on already-unlocked GPUs", async () => {
     vi.mocked(fetchGpuClock).mockResolvedValue({
       ...READY,

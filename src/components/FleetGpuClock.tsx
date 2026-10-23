@@ -19,7 +19,8 @@ const afterNull = (ms: number) => new Promise<null>((resolve) => window.setTimeo
 /** What the row hands the dialog: Save owns when a pick is applied. */
 export interface FleetGpuClockApi {
   /**
-   * True while a pick waits for Save: it differs from what the fleet reports, or
+   * True while a pick waits for Save: it differs from what the fleet reports — the
+   * cap, or the boot hooks installed against "Keep after reboot" — or
    * the last Save of it did not take (a unit refused, every unit was skipped, the
    * request failed). A later read that happens to match the pick does not settle
    * a failed Save — the cap can land while its boot hook is refused — so it stays
@@ -39,13 +40,31 @@ interface FleetGpuClockProps {
   readTimeoutMs?: number;
 }
 
+/**
+ * The cap a unit's installed boot hook keeps across reboots: null with no hook
+ * installed, false where what is installed would not keep a cap the way Save
+ * writes one — both hooks at once, a service that is not enabled, a job that
+ * failed at this boot, or clocks other than the fleet's "0,max".
+ */
+type BootHook = number | null | false;
+
 /** What the Sparks report right now: one shared cap, a mix, or nothing readable. */
 type FleetNow =
-  | { kind: "same"; capMHz: number | null; units: number; unreadable: number; hasBootHooks: boolean }
+  | { kind: "same"; capMHz: number | null; units: number; unreadable: number; boots: BootHook[] }
   | { kind: "mixed"; caps: (number | null)[]; unreadable: number }
   | { kind: "unknown" };
 
 type ReadyStatus = Extract<GpuClockStatus, { supported: true }>;
+
+function bootHook({ service, cron }: ReadyStatus): BootHook {
+  if (!service.installed && !cron.installed) return null;
+  if (service.installed && cron.installed) return false;
+  const clocks = service.installed
+    ? service.enabled === "enabled" ? service.clocks : null
+    : cron.failed ? null : cron.clocks;
+  const m = /^0,(\d+)$/.exec(clocks ?? "");
+  return m ? Number(m[1]) : false;
+}
 
 /**
  * Fleet-wide GPU clock cap in Settings. One row of states — Full capacity,
@@ -74,6 +93,7 @@ export function FleetGpuClock({
   const [msg, setMsg] = useState<{ text: string; ok: boolean; detail?: string } | null>(null);
   const timer = useRef<number | undefined>(undefined);
   // Once the checkbox is touched, the fleet's own capability stops setting it.
+  // The capability default alone never asks for a change: only a pick or a touch does.
   const persistTouched = useRef(false);
   // A failed Save that asked to keep the cap holds the tick as asked: the read
   // after it must not quietly turn the retry into a cap that ends at reboot.
@@ -141,10 +161,7 @@ export function FleetGpuClock({
       const first = caps[0];
       setNow(
         caps.every((cap) => cap === first)
-          ? {
-              kind: "same", capMHz: first, units: caps.length, unreadable,
-              hasBootHooks: ready.some((status) => status.service.installed || status.cron.installed),
-            }
+          ? { kind: "same", capMHz: first, units: caps.length, unreadable, boots: ready.map(bootHook) }
           : { kind: "mixed", caps, unreadable },
       );
     } catch {
@@ -158,11 +175,16 @@ export function FleetGpuClock({
   }, [read]);
 
   const shared = now?.kind === "same" ? now.capMHz : undefined;
+  // The boot hook every unit should end up with: the picked cap with the tick on,
+  // none otherwise — removing the cap keeps nothing, and an unticked cap ends at reboot.
+  const wantHook = picked !== undefined && picked !== null && persist ? picked : null;
   // Any pick on a mixed or unreadable fleet is a change: it is asking to unify it.
   // A pick whose last Save failed stays a change even where the fleet now matches it.
+  // On a fleet already at the picked cap, a hook that is missing, stale or broken
+  // on any unit — or installed where none is asked for — is still a change.
   const pending = picked !== undefined && (
     unsettled || now?.kind !== "same" || now.unreadable > 0 || picked !== shared ||
-    (picked === null && now.hasBootHooks)
+    now.boots.some((hook) => hook !== wantHook)
   );
 
   useEffect(() => {
@@ -321,6 +343,9 @@ export function FleetGpuClock({
             persistTouched.current = true;
             persistHeld.current = false;
             setPersist(e.target.checked);
+            // A persistence-only change keeps the known shared cap; never invent
+            // a frequency when the fleet is mixed or unreadable.
+            if (picked === undefined && typeof shared === "number") setPicked(shared);
           }}
           // A tick held from a refused Save can still be cleared, to cap until reboot instead.
           disabled={busy || (canPersist === false && !persist)}

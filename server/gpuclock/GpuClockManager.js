@@ -26,6 +26,8 @@ const CODE_STATUS = {
   "no-nvidia": 409,
   "no-gpu": 409,
   "no-systemd": 409,
+  busy: 409,
+  "lock-failed": 409,
   range: 400,
   "bad-output": 502,
   "bad-password": 403,

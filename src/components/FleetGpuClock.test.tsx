@@ -29,7 +29,7 @@ const FLEET = {
 const ready = (
   capMHz: number | null,
   persistKind: GpuClockPersistKind = "unit",
-): GpuClockStatus => ({
+): Extract<GpuClockStatus, { supported: true }> => ({
   supported: true,
   hwMaxMHz: 3003,
   capMHz,
@@ -37,6 +37,15 @@ const ready = (
   persistKind,
   service: { installed: false, clocks: null, enabled: null, active: null },
   cron: { installed: false, clocks: null, failed: false },
+});
+
+const kept = (capMHz: number, hook: "unit" | "cron" = "unit") => ({
+  ...ready(capMHz, hook),
+  service: {
+    installed: hook === "unit", clocks: hook === "unit" ? `0,${capMHz}` : null,
+    enabled: hook === "unit" ? "enabled" : null, active: hook === "unit" ? "active" : null,
+  },
+  cron: { installed: hook === "cron", clocks: hook === "cron" ? `0,${capMHz}` : null, failed: false },
 });
 
 /** What the fleet route answers: `success` only when every unit took the request. */
@@ -109,6 +118,82 @@ describe("FleetGpuClock", () => {
   afterEach(() => {
     cleanupRenders();
     vi.useRealTimers();
+  });
+
+  it("can enable persistence without changing the shared cap", async () => {
+    const ref = { current: null as FleetGpuClockApi | null };
+    const { container } = render(<FleetGpuClock apiRef={ref} />);
+    await settle();
+    expect(ref.current!.pending()).toBe(false);
+
+    await click(byText(container, "2100 MHz"));
+    expect(ref.current!.pending()).toBe(true);
+    setApi.mockResolvedValue(done([
+      { id: "spark1", ok: true, capMHz: 2100, persistKind: "unit" },
+      { id: "spark2", ok: true, capMHz: 2100, persistKind: "unit" },
+    ]));
+    statusApi.mockResolvedValue(kept(2100));
+    expect(await applyPicked(ref)).toBe(true);
+    expect(setApi).toHaveBeenCalledWith(2100, true);
+    expect(ref.current!.pending()).toBe(false);
+  });
+
+  it("can remove persistence by toggling the checkbox alone at the shared cap", async () => {
+    statusApi.mockResolvedValue(kept(2100));
+    const ref = { current: null as FleetGpuClockApi | null };
+    const { container } = render(<FleetGpuClock apiRef={ref} />);
+    await settle();
+    const box = container.querySelector('input[type="checkbox"]') as HTMLInputElement;
+    await click(box);
+    expect(ref.current!.pending()).toBe(true);
+    setApi.mockResolvedValue(done([
+      { id: "spark1", ok: true, capMHz: 2100, persistKind: "none" },
+      { id: "spark2", ok: true, capMHz: 2100, persistKind: "none" },
+    ]));
+    statusApi.mockResolvedValue(ready(2100));
+    expect(await applyPicked(ref)).toBe(true);
+    expect(setApi).toHaveBeenCalledWith(2100, false);
+    expect(ref.current!.pending()).toBe(false);
+  });
+
+  it("cancels a persistence-only change when toggled back to the installed state", async () => {
+    statusApi.mockImplementation(async (id) => kept(2100, id === "spark1" ? "unit" : "cron"));
+    const ref = { current: null as FleetGpuClockApi | null };
+    const { container } = render(<FleetGpuClock apiRef={ref} />);
+    await settle();
+    const box = container.querySelector('input[type="checkbox"]') as HTMLInputElement;
+    await click(box);
+    expect(ref.current!.pending()).toBe(true);
+    await click(box);
+    expect(ref.current!.pending()).toBe(false);
+    expect(setApi).not.toHaveBeenCalled();
+  });
+
+  it("does not invent a frequency for a persistence-only change on a mixed fleet", async () => {
+    statusApi.mockImplementation(async (id) => ready(id === "spark1" ? 1800 : 2100));
+    const ref = { current: null as FleetGpuClockApi | null };
+    const { container } = render(<FleetGpuClock apiRef={ref} />);
+    await settle();
+    await click(container.querySelector('input[type="checkbox"]') as HTMLInputElement);
+    expect(ref.current!.pending()).toBe(false);
+    await click(byText(container, "1800 MHz"));
+    expect(ref.current!.pending()).toBe(true);
+  });
+
+  it.each([
+    ["missing", ready(2100)],
+    ["disabled", { ...kept(2100), service: { ...kept(2100).service, enabled: "disabled" } }],
+    ["different clocks", { ...kept(2100), service: { ...kept(2100).service, clocks: "0,1800" } }],
+    ["failed cron", { ...kept(2100, "cron"), cron: { ...kept(2100, "cron").cron, failed: true } }],
+    ["duplicate hooks", { ...kept(2100), cron: kept(2100, "cron").cron }],
+  ] as const)("keeps a matching-frequency pick pending when one unit has a %s hook", async (_reason, unit) => {
+    statusApi.mockImplementation(async (id) => id === "spark1" ? kept(2100) : unit);
+    const ref = { current: null as FleetGpuClockApi | null };
+    const { container } = render(<FleetGpuClock apiRef={ref} />);
+    await settle();
+    expect(ref.current!.pending()).toBe(false);
+    await click(byText(container, "2100 MHz"));
+    expect(ref.current!.pending()).toBe(true);
   });
 
   it("marks the cap every Spark shares, and a pick only selects until Save applies it", async () => {
@@ -527,7 +612,7 @@ describe("FleetGpuClock", () => {
     await settle();
 
     await click(byText(container, "1800 MHz"));
-    statusApi.mockResolvedValue(ready(1800));
+    statusApi.mockResolvedValue(kept(1800));
     expect(await applyPicked(ref)).toBe(false);
     expect(ref.current!.pending()).toBe(true);
 
@@ -535,7 +620,7 @@ describe("FleetGpuClock", () => {
     await click(byText(container, "1800 MHz"));
     expect(ref.current!.pending()).toBe(true);
 
-    // Moving off it and back is a fresh pick: the fleet already reports it.
+    // Moving off it and back is a fresh pick: both the cap and installed hooks match.
     await click(byText(container, "1900 MHz"));
     await click(byText(container, "1800 MHz"));
     expect(ref.current!.pending()).toBe(false);

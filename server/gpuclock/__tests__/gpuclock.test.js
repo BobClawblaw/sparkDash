@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import { strict as assert } from "node:assert";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -26,7 +26,7 @@ function sandbox({ hwMax = 3003, lgcFails = false, narrowSudo = false, cron = fa
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "gpuclock-"));
   const bin = path.join(root, "bin");
   fs.mkdirSync(bin);
-  for (const d of ["units", "run", "systemd"]) fs.mkdirSync(path.join(root, d));
+  for (const d of ["units", "run", "systemd", "user-home"]) fs.mkdirSync(path.join(root, d));
   fs.writeFileSync(path.join(root, "boot_id"), "11111111-2222-3333-4444-555555555555\n");
   if (cron) fs.writeFileSync(path.join(root, "cron_active"), "");
   const lock = path.join(root, "lock");
@@ -75,7 +75,7 @@ exit 0
     path.join(bin, "sudo"),
     `#!/bin/sh
 echo "sudo $*" >> ${calls}
-[ "$1" = "-n" ] && shift
+while [ "$1" = "-n" ] || [ "$1" = "-k" ]; do shift; done
 if [ "$1" = "-l" ]; then
   shift
   [ "$2" = "-lgc" ] && exit 0
@@ -120,11 +120,17 @@ esac
     sandbox: true,
     sandboxSudo: narrowSudo ? path.join(bin, "sudo") : "",
   };
-  const withPath = (env) => ({ ...(env ?? process.env), PATH: `${bin}:${(env ?? process.env).PATH ?? ""}` });
-  const run = (program, { shell = "sh", env } = {}) =>
-    parseProgramOutput(execFileSync(shell, ["-c", program], { encoding: "utf8", env: withPath(env) }));
+  const environment = (env = {}) => ({
+    ...process.env,
+    ...env,
+    HOME: env.HOME?.startsWith(`${root}/`) ? env.HOME : path.join(root, "user-home"),
+    PATH: env.PATH?.split(":").includes(bin) ? env.PATH : `${bin}:${env.PATH ?? process.env.PATH ?? ""}`,
+  });
+  const exec = (program, { shell = "sh", env, ...options } = {}) =>
+    execFileSync(shell, ["-c", program], { encoding: "utf8", ...options, env: environment(env) });
+  const run = (program, options) => parseProgramOutput(exec(program, options));
   /** Run a shell snippet as cron would, ignoring the program output protocol. */
-  const shell = (program, env) => execFileSync("sh", ["-c", program], { encoding: "utf8", env: withPath(env) });
+  const shell = (program, env) => exec(program, { env });
   const read = (f) => (fs.existsSync(path.join(root, f)) ? fs.readFileSync(path.join(root, f), "utf8") : null);
   const write = (f, text) => fs.writeFileSync(path.join(root, f), text);
   return {
@@ -132,6 +138,8 @@ esac
     paths,
     run,
     shell,
+    exec,
+    environment,
     read,
     write,
     bin,
@@ -654,7 +662,7 @@ test("reset refuses before unlocking when a root-written marker is out of reach 
 
     let err;
     try {
-      execFileSync("sh", ["-c", buildManualCommand("reset", {}, paths)], { encoding: "utf8", env, stdio: ["ignore", "pipe", "pipe"] });
+      sb.exec(buildManualCommand("reset", {}, paths), { env, stdio: ["ignore", "pipe", "pipe"] });
     } catch (e) {
       err = e;
     }
@@ -977,11 +985,9 @@ test("a sudo path with characters a crontab line cannot carry is refused before 
     fs.mkdirSync(odd);
     fs.copyFileSync(path.join(sb.bin, "sudo"), path.join(odd, "sudo"));
     fs.chmodSync(path.join(odd, "sudo"), 0o755);
-    const out = execFileSync("sh", ["-c", buildApplyProgram({ minMHz: 0, maxMHz: 1800, persist: true }, sb.paths)], {
-      encoding: "utf8",
-      env: { ...process.env, PATH: `${odd}:${sb.bin}:${process.env.PATH}` },
+    const res = sb.run(buildApplyProgram({ minMHz: 0, maxMHz: 1800, persist: true }, sb.paths), {
+      env: { PATH: `${odd}:${sb.bin}:${process.env.PATH}` },
     });
-    const res = parseProgramOutput(out);
     assert.equal(res.RESULT, "error");
     assert.equal(res.CODE, "cron-failed");
     assert.match(res.MSG, /cannot be put in a crontab safely/);
@@ -1083,21 +1089,11 @@ test("manual command: plain sudo that prompts, readable output, runs end to end"
   const sb = sandbox();
   try {
     const cmd = buildManualCommand("apply", { maxMHz: 1800, persist: true }, sb.paths);
-    assert.match(cmd, /^# sparkDash: run this on the Spark itself\. It will ask for your sudo password\./);
-    assert.match(cmd, /cap the GPU clock at 1800 MHz and keep it after reboot/);
-    const real = buildManualCommand("apply", { maxMHz: 1800, persist: true });
-    assert.match(real, /SUDO="sudo"/);
-    assert.match(real, /sudo -v/);
-    assert.doesNotMatch(real, /sudo -n/);
-    assert.doesNotMatch(real, /RESULT=/);
-    execFileSync("sh", ["-n", "-c", real]);
-    const out = execFileSync("sh", ["-c", cmd], { encoding: "utf8" });
-    assert.match(out, /Done: GPU clock capped at 1800 MHz and kept after reboot/);
+    sb.shell(cmd);
     assert.equal(sb.read("lock").trim(), "0,1800");
     assert.equal(sb.read(`run/${MARKER_FILE}`).trim().startsWith("1800 "), true);
 
-    const gone = execFileSync("sh", ["-c", buildManualCommand("reset", {}, sb.paths)], { encoding: "utf8" });
-    assert.match(gone, /Done: GPU clock cap removed/);
+    sb.shell(buildManualCommand("reset", {}, sb.paths));
     assert.equal(sb.read(`units/${UNIT_NAME}`), null);
   } finally {
     sb.cleanup();
@@ -1110,7 +1106,7 @@ test("manual command: a refusal prints the reason and exits non-zero", () => {
     const cmd = buildManualCommand("apply", { maxMHz: 3000, persist: false }, sb.paths);
     let err;
     try {
-      execFileSync("sh", ["-c", cmd], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
+      sb.exec(cmd, { stdio: ["ignore", "pipe", "pipe"] });
     } catch (e) {
       err = e;
     }
@@ -1366,47 +1362,217 @@ test("an @reboot job whose line is dropped or replaced while it waits exits with
   }
 });
 
-test("an @reboot job that failed every attempt writes no failure marker once Remove has dropped it", () => {
+test("sandbox manual and password programs cannot discover the caller's crontab or home marker", () => {
+  const caller = fs.mkdtempSync(path.join(os.tmpdir(), "gpuclock-caller-"));
+  const oldHome = process.env.HOME;
+  const oldPath = process.env.PATH;
+  let sb;
+  try {
+    fs.mkdirSync(path.join(caller, "bin"));
+    fs.mkdirSync(path.join(caller, ".config", "sparkdash"), { recursive: true });
+    const marker = path.join(caller, ".config", "sparkdash", MARKER_FILE);
+    fs.writeFileSync(marker, "caller cap must survive\n");
+    fs.writeFileSync(path.join(caller, "bin", "crontab"), `#!/bin/sh\necho invoked >> ${caller}/called\nexit 1\n`, { mode: 0o755 });
+    process.env.HOME = caller;
+    process.env.PATH = `${caller}/bin:${oldPath}`;
+    sb = sandbox();
+    sb.shell(buildManualCommand("apply", { maxMHz: 1800, persist: true }, sb.paths));
+    sb.shell(buildManualCommand("reset", {}, sb.paths));
+    installFakeSudo(sb);
+    assert.equal(sb.run(buildApplyProgram({ minMHz: 0, maxMHz: 2100, persist: true }, pwPaths(sb)), { env: pwEnv(sb, "s3cret") }).RESULT, "ok");
+    assert.equal(sb.lockText(), "0,2100");
+    assert.equal(fs.readFileSync(marker, "utf8"), "caller cap must survive\n");
+    assert.equal(fs.existsSync(path.join(caller, "called")), false);
+  } finally {
+    if (oldHome === undefined) delete process.env.HOME; else process.env.HOME = oldHome;
+    if (oldPath === undefined) delete process.env.PATH; else process.env.PATH = oldPath;
+    sb?.cleanup();
+    fs.rmSync(caller, { recursive: true, force: true });
+  }
+});
+
+test("service-file removal failure restores the cap and marker, or reports the failed restoration", () => {
+  for (const restoration of ["ok", "lgc-failed", "marker-failed"]) {
+    const sb = sandbox();
+    try {
+      assert.equal(sb.run(buildApplyProgram({ minMHz: 0, maxMHz: 1800, persist: true }, sb.paths)).RESULT, "ok");
+      const denied = path.join(sb.root, "restoration-denied");
+      fs.writeFileSync(path.join(sb.bin, "rm"), `#!/bin/sh\nfor p in "$@"; do [ "$p" != ${sb.paths.unitDir}/${UNIT_NAME} ] || { : > ${denied}; exit 1; }; done\nexec /bin/rm "$@"\n`, { mode: 0o755 });
+      if (restoration === "lgc-failed") {
+        fs.writeFileSync(path.join(sb.bin, "nvidia-smi"), `#!/bin/sh\ncase "$1" in --query-gpu=clocks.max.gr) echo 3003 ;; -lgc) [ ! -f ${denied} ] || { echo refused >&2; exit 4; }; echo "$2" > ${sb.root}/lock ;; -rgc) /bin/rm -f ${sb.root}/lock ;; esac\n`, { mode: 0o755 });
+      }
+      if (restoration === "marker-failed") {
+        fs.writeFileSync(path.join(sb.bin, "chmod"), `#!/bin/sh\n[ ! -f ${denied} ] || exit 1\nexec /bin/chmod "$@"\n`, { mode: 0o755 });
+      }
+      const result = sb.run(buildApplyProgram({ minMHz: 0, maxMHz: 2000, persist: false }, sb.paths));
+      assert.equal(result.RESULT, "error");
+      assert.equal(result.CODE, restoration === "ok" ? "service-failed" : restoration);
+      assert.notEqual(sb.read(`units/${UNIT_NAME}`), null);
+      if (restoration === "ok") {
+        assert.equal(sb.lockText(), "0,2000");
+        assert.equal(sb.run(buildStatusProgram(sb.paths)).CAP, "2000");
+      } else if (restoration === "lgc-failed") {
+        assert.equal(sb.lockText(), null);
+        assert.equal(sb.read(`run/${MARKER_FILE}`), null);
+        assert.match(result.MSG, /restoring the live cap failed/);
+      } else {
+        assert.equal(sb.lockText(), "0,2000");
+        assert.equal(sb.read(`run/${MARKER_FILE}`), null);
+        assert.match(result.MSG, /marker could not be recorded/);
+      }
+    } finally {
+      sb.cleanup();
+    }
+  }
+});
+
+test("an unreadable installed crontab fails status without hiding or modifying its hook", () => {
   const sb = sandbox({ narrowSudo: true, cron: true });
   try {
-    sb.run(buildApplyProgram({ minMHz: 0, maxMHz: 1800, persist: true }, sb.paths));
-    // At this boot nvidia-smi refuses every cap; Remove lands during the job's last attempt.
-    sb.write("onlgc3", buildResetProgram(sb.paths));
-    fs.writeFileSync(
-      path.join(sb.bin, "nvidia-smi"),
-      `#!/bin/sh
-echo "nvidia-smi $*" >> ${sb.root}/calls.log
-case "$1" in
-  --query-gpu=clocks.max.gr) echo 3003 ;;
-  -lgc) n=$(cat ${sb.root}/lgcs 2>/dev/null || echo 0); n=$((n + 1)); echo $n > ${sb.root}/lgcs
-        [ "$n" = 3 ] && sh ${sb.root}/onlgc3 >/dev/null
-        echo refused >&2; exit 4 ;;
-  -rgc) rm -f ${sb.root}/lock ;;
-esac
-`,
-      { mode: 0o755 }
-    );
-    rebootWithSleeps(sb);
-    assert.equal(sb.read("lgcs").trim(), "3", "all three attempts ran");
-    assert.equal(sb.cronText(), "");
-    assert.equal(sb.read(`run/${MARKER_FILE}.failed`), null, "no failure marker for a job that is no longer installed");
-    assert.doesNotMatch(sb.calls(), /^logger /m);
-    assert.equal(sb.run(buildStatusProgram(sb.paths)).CRON_FAILED, "0");
+    assert.equal(sb.run(buildApplyProgram({ minMHz: 0, maxMHz: 1800, persist: true }, sb.paths)).RESULT, "ok");
+    const before = sb.cronText();
+    sb.write("crontab.broken", "");
+    const status = sb.run(buildStatusProgram(sb.paths));
+    assert.equal(status.RESULT, "error");
+    assert.equal(status.CODE, "cron-failed");
+    assert.equal(sb.cronText(), before);
+    assert.equal(sb.lockText(), "0,1800");
   } finally {
     sb.cleanup();
   }
 });
 
-test("an @reboot job that cannot read the crontab while it waits still re-applies its cap", () => {
+test("a reboot job cannot change clocks or markers without verifying its installed token", () => {
   const sb = sandbox({ narrowSudo: true, cron: true });
   try {
     sb.run(buildApplyProgram({ minMHz: 0, maxMHz: 1800, persist: true }, sb.paths));
-    // A spool that cannot be read says nothing about which job is current: not superseded.
-    rebootWithSleeps(sb, { 1: `: > ${path.join(sb.root, "crontab.broken")}` });
-    assert.equal(sb.lockText(), "0,1800");
-    assert.equal(sb.read(`run/${MARKER_FILE}`), "1800 22222222-3333-4444-5555-666666666666\n");
+    const marker = sb.read(`run/${MARKER_FILE}`);
+    rebootWithSleeps(sb, { 1: `: > ${sb.root}/crontab.broken` });
+    assert.equal(sb.lockText(), null);
+    assert.equal(sb.read(`run/${MARKER_FILE}`), marker);
     assert.equal(sb.read(`run/${MARKER_FILE}.failed`), null);
+    assert.match(sb.calls(), /logger .*crontab could not be read/);
+    assert.equal(sb.run(buildStatusProgram(sb.paths)).CODE, "cron-failed");
   } finally {
     sb.cleanup();
+  }
+});
+
+test("cron persistence refuses password-only NVIDIA permission even with cached authentication", () => {
+  const sb = sandbox({ cron: true });
+  try {
+    const allowed = path.join(sb.root, "nopasswd");
+    const cached = path.join(sb.root, "cached");
+    fs.writeFileSync(path.join(sb.bin, "sudo"), `#!/bin/sh
+K=0; S=0
+while [ $# -gt 0 ]; do case "$1" in -k) K=1; shift ;; -n) shift ;; -S) S=1; shift ;; -p) shift 2 ;; *) break ;; esac; done
+if [ "$S" = 1 ]; then read -r pw; [ "$pw" = s3cret ] || exit 1; : > ${cached}; fi
+case "$1" in
+  true) [ "$S" = 1 ] && exit 0 ;;
+  -l) exit 0 ;;
+  ${sb.bin}/nvidia-smi)
+    [ "$S" = 1 ] || [ -f ${allowed} ] || { [ "$K" = 0 ] && [ -f ${cached} ]; } || { echo 'sudo: a password is required' >&2; exit 1; }
+    exec "$@" ;;
+esac
+exit 1
+`, { mode: 0o755 });
+    const paths = pwPaths(sb);
+    const env = pwEnv(sb, "s3cret");
+    assert.equal(sb.run(buildApplyProgram({ minMHz: 0, maxMHz: 2100, persist: false }, paths), { env }).RESULT, "ok");
+    const marker = sb.read(`user-home/.config/sparkdash/${MARKER_FILE}`);
+    const denied = sb.run(buildApplyProgram({ minMHz: 0, maxMHz: 1800, persist: true }, paths), { env });
+    assert.equal(denied.CODE, "no-sudo");
+    assert.equal(sb.lockText(), "0,2100");
+    assert.equal(sb.read(`user-home/.config/sparkdash/${MARKER_FILE}`), marker);
+    assert.equal(sb.cronText(), "");
+    sb.write("nopasswd", "");
+    assert.equal(sb.run(buildApplyProgram({ minMHz: 0, maxMHz: 1800, persist: true }, paths), { env }).PERSIST_KIND, "cron");
+    fs.rmSync(cached);
+    rebootWithSleeps(sb);
+    assert.equal(sb.lockText(), "0,1800");
+    assert.equal(sb.run(buildStatusProgram(paths), { env }).CAP, "1800");
+  } finally {
+    sb.cleanup();
+  }
+});
+
+test("missing flock refuses Apply and Remove before changing an existing cap or hook", () => {
+  const sb = sandbox({ narrowSudo: true, cron: true });
+  try {
+    sb.run(buildApplyProgram({ minMHz: 0, maxMHz: 1800, persist: true }, sb.paths));
+    const hook = sb.cronText();
+    for (const program of [
+      buildApplyProgram({ minMHz: 0, maxMHz: 2000, persist: true }, { ...sb.paths, flock: [] }),
+      buildResetProgram({ ...sb.paths, flock: [] }),
+    ]) {
+      assert.equal(sb.run(program).CODE, "lock-failed");
+      assert.equal(sb.lockText(), "0,1800");
+      assert.equal(sb.cronText(), hook);
+      assert.equal(sb.run(buildStatusProgram(sb.paths)).CAP, "1800");
+    }
+  } finally {
+    sb.cleanup();
+  }
+});
+
+const waitForFile = async (file) => {
+  const deadline = Date.now() + 5000;
+  while (!fs.existsSync(file)) {
+    assert.ok(Date.now() < deadline, `timed out waiting for ${file}`);
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+};
+
+test("Reset and newer Apply wait for an in-flight reboot GPU command before replacing its state", { timeout: 20000 }, async () => {
+  for (const next of [null, 2000, 1800]) {
+    const sb = sandbox({ narrowSudo: true, cron: true });
+    const children = [];
+    try {
+      const flock = path.join(sb.bin, "flock");
+      fs.writeFileSync(flock, `#!/bin/sh\n[ "\${GPU_LOCK_ACTOR-}" != dashboard ] || : > ${sb.root}/dashboard-waiting\nexec /usr/bin/flock "$@"\n`, { mode: 0o755 });
+      const paths = { ...sb.paths, flock: [flock] };
+      assert.equal(sb.run(buildApplyProgram({ minMHz: 0, maxMHz: 1800, persist: true }, paths)).RESULT, "ok");
+      fs.writeFileSync(path.join(sb.bin, "nvidia-smi"), `#!/bin/sh
+case "$1" in
+  --query-gpu=clocks.max.gr) echo 3003 ;;
+  -lgc) : > ${sb.root}/gpu-started
+        while [ ! -f ${sb.root}/gpu-release ]; do /bin/sleep 0.01; done
+        echo "$2" > ${sb.root}/lock ;;
+  -rgc) /bin/rm -f ${sb.root}/lock ;;
+esac
+`, { mode: 0o755 });
+      sb.write("boot_id", "22222222-3333-4444-5555-666666666666\n");
+      sb.write("lock", "0,2400\n");
+      const start = (program, env) => {
+        const child = spawn("sh", ["-c", program], { env: sb.environment(env) });
+        children.push(child);
+        let out = "";
+        let err = "";
+        child.stdout.on("data", (data) => { out += data; });
+        child.stderr.on("data", (data) => { err += data; });
+        return new Promise((resolve, reject) => {
+          child.once("error", reject);
+          child.once("close", (code) => resolve({ code, out, err }));
+        });
+      };
+      const job = sb.cronText().trim().replace(/^@reboot /, "").replaceAll("/bin/sleep 20", "/bin/sleep 0");
+      const reboot = start(job);
+      await waitForFile(path.join(sb.root, "gpu-started"));
+      const dashboard = start(next === null ? buildResetProgram(paths) : buildApplyProgram({ minMHz: 0, maxMHz: next, persist: true }, paths), { GPU_LOCK_ACTOR: "dashboard" });
+      await waitForFile(path.join(sb.root, "dashboard-waiting"));
+      assert.equal(sb.lockText(), "0,2400", "the dashboard cannot mutate hardware while the reboot command holds the lock");
+      sb.write("gpu-release", "");
+      const [bootResult, result] = await Promise.all([reboot, dashboard]);
+      assert.equal(bootResult.code, 0, bootResult.err);
+      assert.equal(result.code, 0, result.err);
+      assert.equal(parseProgramOutput(result.out).RESULT, "ok");
+      assert.equal(sb.lockText(), next === null ? null : `0,${next}`);
+      assert.equal(sb.run(buildStatusProgram(paths)).CAP, next === null ? "" : String(next));
+      assert.equal(sb.read(`run/${MARKER_FILE}.failed`), null);
+      if (next === null) assert.equal(sb.cronText(), "");
+    } finally {
+      for (const child of children) if (child.exitCode === null) child.kill("SIGKILL");
+      sb.cleanup();
+    }
   }
 });
