@@ -997,6 +997,10 @@ For compatibility, `SSH_CONTROL_PERSIST` is accepted as a seconds-based fallback
 4. **Test** shows pass/fail/skipped for host collectors/SSH and each enabled service (LLM, ComfyUI, Hermes Agent, Tailnet). Every enabled capability must pass; disable an unavailable optional service before saving if it should not be monitored.
 5. Save — a tab appears and metrics start streaming.
 
+### When an engine moves to another node
+
+Head and worker roles are configured, not discovered: a worker is never probed for LLM endpoints, and a head is always monitored. If a tensor-parallel recipe moves rank 0 and its API to the former worker, edit the units so the API-serving node is the Head, update the other node to Worker and its head link, and verify the Head's LLM ports. Token totals resume from newly observed counters; traffic during the unmonitored period cannot be reconstructed. sparkDash does not currently detect this role mismatch or automatically follow the engine.
+
 ### Loaded models in private containers
 
 Overview lists all models returned by the configured, reachable LLM endpoints.
