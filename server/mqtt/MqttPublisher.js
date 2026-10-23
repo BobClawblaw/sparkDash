@@ -18,6 +18,12 @@ export const MAX_IN_FLIGHT = 100;
 export const ACK_TIMEOUT_MS = 30_000;
 /** How long stop() waits for the broker to acknowledge the offline status. */
 export const STOP_TIMEOUT_MS = 1_500;
+/**
+ * Removed units whose retained topics are still waiting to be cleared. Past
+ * this the oldest are forgotten, so removals during a long outage cost a
+ * bounded amount of memory.
+ */
+export const MAX_PENDING_REMOVALS = 100;
 
 /**
  * Outbound MQTT bridge (opt-in, Settings → MQTT): republishes what sparkDash
@@ -66,9 +72,15 @@ export class MqttPublisher {
     /** @type {Map<number, number>} */
     this._inFlight = new Map();
     this._seq = 0;
-    /** Removed unit ids whose retained topics still need clearing at the broker. */
+    /**
+     * Removed unit ids whose retained topics still need clearing at the broker
+     * (insertion order = oldest first). Only kept for the current client's
+     * broker and prefix; see removeUnit().
+     */
     /** @type {Set<string>} */
     this._removedUnits = new Set();
+    /** Bumped whenever pending removals are dropped, so late publish failures from before are not re-queued. */
+    this._removalsEpoch = 0;
   }
 
   /**
@@ -82,7 +94,8 @@ export class MqttPublisher {
     const base = this._prefix();
     const user = s.mqttUsername || "";
     if (this._client && this._url === s.mqttUrl && this._base === base && this._user === user) return;
-    this._teardown();
+    // A different broker, prefix or user: removals queued for the old one no longer apply.
+    if (this._client) this._teardown();
     this._url = s.mqttUrl;
     this._base = base;
     this._user = user;
@@ -105,6 +118,7 @@ export class MqttPublisher {
       this._url = null;
       this._base = null;
       this._user = null;
+      this._dropPendingRemovals();
       return this._quietLog(`connect failed: ${err?.message}`);
     }
     this._client = client;
@@ -177,14 +191,19 @@ export class MqttPublisher {
    * A unit was deleted: clear its retained status and metrics topics so
    * subscribers do not keep seeing a unit that no longer exists. If the broker
    * is unreachable (or refuses), the clear is retried on later ticks.
+   *
+   * Pending clears are bounded: none are recorded while there is no client
+   * (MQTT disabled or unconfigured), they are dropped when MQTT is disabled or
+   * the broker, prefix or user changes, and at most MAX_PENDING_REMOVALS are
+   * kept (oldest dropped first). A stall reconnect keeps them.
    */
   removeUnit(sparkId) {
-    if (sparkId == null || sparkId === "") return;
+    if (sparkId == null || sparkId === "" || !this._client) return;
     const id = String(sparkId);
     const base = this._prefix();
     this._sentState.delete(unitStatusTopic(base, id));
     this._sentState.delete(unitMetricsTopic(base, id));
-    this._removedUnits.add(id);
+    this._queueRemoval(id);
     this._clearRemovedUnits();
   }
 
@@ -227,14 +246,33 @@ export class MqttPublisher {
   _clearRemovedUnits() {
     if (!this._removedUnits.size || !this._client?.connected) return;
     const base = this._prefix();
+    const epoch = this._removalsEpoch;
+    const retry = (id) => {
+      if (this._removalsEpoch === epoch) this._queueRemoval(id);
+    };
     for (const id of [...this._removedUnits]) {
       let handedOff = true;
       for (const topic of [unitStatusTopic(base, id), unitMetricsTopic(base, id)]) {
-        const sent = this._publish(topic, "", { qos: 1, retain: true }, () => this._removedUnits.add(id));
+        const sent = this._publish(topic, "", { qos: 1, retain: true }, () => retry(id));
         if (!sent) handedOff = false;
       }
       if (handedOff) this._removedUnits.delete(id);
     }
+  }
+
+  /** Record a pending clear, forgetting the oldest beyond MAX_PENDING_REMOVALS. */
+  _queueRemoval(id) {
+    this._removedUnits.add(id);
+    while (this._removedUnits.size > MAX_PENDING_REMOVALS) {
+      const oldest = this._removedUnits.values().next().value;
+      this._removedUnits.delete(oldest);
+      this._quietLog(`more than ${MAX_PENDING_REMOVALS} removed units awaiting the broker; retained topics for "${oldest}" will not be cleared`);
+    }
+  }
+
+  _dropPendingRemovals() {
+    this._removedUnits.clear();
+    this._removalsEpoch += 1;
   }
 
   /**
@@ -296,11 +334,13 @@ export class MqttPublisher {
     const oldest = this._inFlight.values().next().value;
     if (this._now() - oldest < ACK_TIMEOUT_MS) return;
     this._log.warn(`[mqtt] broker has not acknowledged a publish in ${ACK_TIMEOUT_MS / 1000} s; reconnecting`);
-    this._teardown();
+    // Same broker and prefix: the clears still apply after the reconnect.
+    this._teardown({ keepPendingRemovals: true });
     this.applySettings();
   }
 
-  _teardown() {
+  /** @param {{ keepPendingRemovals?: boolean }} [opts] */
+  _teardown({ keepPendingRemovals = false } = {}) {
     const client = this._client;
     this._client = null;
     this._url = null;
@@ -308,6 +348,8 @@ export class MqttPublisher {
     this._user = null;
     this._sentState.clear();
     this._inFlight.clear();
+    // Before end(): it fails every outstanding clear, which must not re-queue them.
+    if (!keepPendingRemovals) this._dropPendingRemovals();
     if (!client) return;
     try {
       client.end(true); // force: don't wait on in-flight QoS acks during teardown

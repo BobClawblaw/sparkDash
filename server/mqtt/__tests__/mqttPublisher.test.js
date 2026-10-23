@@ -4,7 +4,7 @@
  */
 import { test } from "node:test";
 import { strict as assert } from "node:assert";
-import { ACK_TIMEOUT_MS, MAX_IN_FLIGHT, MqttPublisher } from "../MqttPublisher.js";
+import { ACK_TIMEOUT_MS, MAX_IN_FLIGHT, MAX_PENDING_REMOVALS, MqttPublisher } from "../MqttPublisher.js";
 
 /**
  * Stub mqtt.js client capturing the calls the publisher makes. With `autoAck`
@@ -457,4 +457,75 @@ test("the availability announcement is retried when the cap blocked it at connec
   h.ack();
   h.publisher.publishFleet([]);
   assert.deepEqual(h.topics(MAX_IN_FLIGHT), ["sparkdash/dashboard/status"]);
+});
+
+/** Topics of the zero-length retained clears sent since `from`. */
+const clears = (h, from = 0) => h.calls.publishes.slice(from).filter((p) => p.payload === "").map((p) => p.topic);
+
+test("removals are not recorded while MQTT has no client", () => {
+  const h = harness({ settings: { mqttEnabled: false } });
+  h.publisher.applySettings();
+  for (let i = 0; i < 3 * MAX_PENDING_REMOVALS; i += 1) h.publisher.removeUnit(`gone-${i}`);
+  h.set({ mqttEnabled: true });
+  h.publisher.applySettings();
+  h.fire("connect");
+  h.publisher.publishFleet([]);
+  assert.deepEqual(clears(h), []);
+});
+
+test("disabling MQTT drops pending clears, including ones failed by the teardown", () => {
+  const h = harness({ client: { autoAck: false } });
+  h.ready();
+  h.publisher.removeUnit("alpha"); // handed off, awaiting PUBACK
+  h.client.connected = false;
+  h.publisher.removeUnit("beta"); // queued while the broker is down
+  h.set({ mqttEnabled: false });
+  h.publisher.applySettings(); // end(true) fails alpha's outstanding clears
+  h.set({ mqttEnabled: true });
+  h.client.connected = true;
+  const mark = h.calls.publishes.length;
+  h.publisher.applySettings();
+  h.fire("connect");
+  h.publisher.publishFleet([]);
+  assert.deepEqual(clears(h, mark), []);
+});
+
+test("changing the topic prefix drops clears queued for the old prefix", () => {
+  const h = harness();
+  h.ready();
+  h.client.connected = false;
+  h.publisher.removeUnit("alpha");
+  h.set({ mqttTopicPrefix: "other" });
+  h.client.connected = true;
+  h.publisher.applySettings();
+  h.fire("connect");
+  h.publisher.publishFleet([]);
+  assert.deepEqual(clears(h), []);
+});
+
+test("at most MAX_PENDING_REMOVALS clears are kept, oldest dropped first", () => {
+  const h = harness();
+  h.ready();
+  h.client.connected = false;
+  const extra = 5;
+  for (let i = 0; i < MAX_PENDING_REMOVALS + extra; i += 1) h.publisher.removeUnit(`u${i}`);
+  h.client.connected = true;
+  h.fire("connect");
+  const cleared = clears(h);
+  assert.equal(cleared.length, 2 * MAX_PENDING_REMOVALS);
+  assert.equal(cleared[0], `sparkdash/status/u${extra}`);
+  assert.equal(cleared.at(-1), `sparkdash/metrics/u${MAX_PENDING_REMOVALS + extra - 1}`);
+});
+
+test("a stall reconnect keeps a clear that was still awaiting the broker", () => {
+  let clock = 1_000_000;
+  const h = harness({ client: { autoAck: false }, now: () => clock });
+  h.ready();
+  h.publisher.removeUnit("alpha");
+  clock += ACK_TIMEOUT_MS;
+  const mark = h.calls.publishes.length;
+  // Watchdog: the teardown fails the outstanding clears, then the reconnect resends them.
+  h.publisher.publishFleet([]);
+  assert.equal(h.attempts.length, 2);
+  assert.deepEqual(clears(h, mark), ["sparkdash/status/alpha", "sparkdash/metrics/alpha"]);
 });
