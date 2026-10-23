@@ -34,6 +34,8 @@ Use `npm ci` to install the existing lockfile graph, then `npm run dev` for the 
 
 GPU-clock generated programs require Linux util-linux `flock` for on-unit serialization with their reboot jobs. Their sandbox subprocesses must all use the fixture's isolated HOME and PATH, including manual-command and password-mode executions; never let a generated program discover the developer's crontab or marker.
 
+Model-launcher programs use GNU `tail --pid` with a process-group lifetime monitor; keep log draining before the protocol exit marker rather than relying on a timed follower shutdown. Linux verification containers must reap detached children (`docker run --init`) rather than leaving wrapper helpers as zombies.
+
 `npm start` serves the production frontend and API on port 5555, binding to loopback by default. Vite development uses port 5173. README documents authentication, allowed targets and Docker operation. Production compose mounts `server` and `dist`, so server edits reload and frontend edits require a host build and browser refresh. Changes to dependencies or the Dockerfile require a container rebuild.
 
 ## Metric conventions
