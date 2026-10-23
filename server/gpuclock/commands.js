@@ -465,7 +465,12 @@ export function buildApplyProgram({ minMHz, maxMHz, persist }, overrides = {}) {
     '  MARKER_ERR="the cap is applied until the next reboot, but the older recorded cap ($MARKER) could not be removed, so the status may show it instead"',
     '  return 1',
     '}',
-    'OUT=$(lgc 2>&1) || { if [ "$HOOK" = cron ]; then fail no-sudo "keeping the cap after reboot requires this exact NVIDIA cap command without a password or cached sudo authentication: $(lgc_error "$OUT")"; fi; fail lgc-failed "nvidia-smi refused the clock cap: $(lgc_error "$OUT")"; }',
+    'OUT=$(lgc 2>&1) || {',
+    '  if [ "$HOOK" = cron ]; then',
+    '    case "$OUT" in sudo:*) fail no-sudo "keeping the cap after reboot requires this exact NVIDIA cap command without a password or cached sudo authentication: $(lgc_error "$OUT")" ;; esac',
+    '  fi',
+    '  fail lgc-failed "nvidia-smi refused the clock cap: $(lgc_error "$OUT")"',
+    '}',
     'if [ "$PERSIST" = 0 ]; then',
     // The cap is live and recorded first: if a stale hook then cannot be removed, the
     // status still reads the cap that is really in force, and the error says what is left.

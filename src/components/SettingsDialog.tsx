@@ -154,6 +154,9 @@ export function SettingsDialog({ open, onClose, onSaved }: SettingsDialogProps) 
       // Hardware first: Save is the only thing that changes a clock, and a unit
       // that refuses it must not leave the settings half-saved behind.
       if (fleetClockPending && !(await fleetClock.current?.apply())) return;
+      // The settings write remains unsaved work even when only the GPU changed.
+      // Keep it retryable if it fails after the hardware choice has been cleared.
+      setDirty(true);
       const result = await updateSettings(settings);
       setSettings(result);
       setDirty(false);

@@ -1496,6 +1496,19 @@ exit 1
   }
 });
 
+test("an authorized NVIDIA rejection on the cron path remains a clock error, not an authorization error", () => {
+  const sb = sandbox({ narrowSudo: true, cron: true, lgcFails: true });
+  try {
+    const result = sb.run(buildApplyProgram({ minMHz: 0, maxMHz: 1800, persist: true }, sb.paths));
+    assert.equal(result.CODE, "lgc-failed");
+    assert.equal(sb.lockText(), null);
+    assert.equal(sb.cronText(), "");
+    assert.equal(sb.read(`run/${MARKER_FILE}`), null);
+  } finally {
+    sb.cleanup();
+  }
+});
+
 test("missing flock refuses Apply and Remove before changing an existing cap or hook", () => {
   const sb = sandbox({ narrowSudo: true, cron: true });
   try {

@@ -213,6 +213,40 @@ describe("SettingsDialog fleet GPU clock and Save", () => {
     expect(onClose).toHaveBeenCalledTimes(1);
   });
 
+  it("retries a failed settings write after a GPU-only change without applying the GPU again", async () => {
+    const onClose = vi.fn();
+    const onSaved = vi.fn();
+    vi.mocked(updateSettings).mockRejectedValueOnce(new Error("settings unavailable")).mockResolvedValue(SETTINGS);
+    vi.mocked(setFleetGpuClock).mockResolvedValue({
+      success: true, applied: 2,
+      results: [
+        { id: "spark1", ok: true, capMHz: 1800, persistKind: "unit" },
+        { id: "spark2", ok: true, capMHz: 1800, persistKind: "unit" },
+      ],
+    });
+    const { container } = render(<SettingsDialog open onClose={onClose} onSaved={onSaved} />);
+    await settle();
+    byText(container, "1800 MHz").click();
+    await settle();
+    vi.mocked(fetchGpuClock).mockResolvedValue({
+      ...READY, capMHz: 1800,
+      service: { installed: true, clocks: "0,1800", enabled: "enabled", active: "active" },
+    });
+    const save = container.querySelector(".modal-sheet__footer .btn--primary") as HTMLButtonElement;
+    save.click();
+    await settle();
+    expect(onClose).not.toHaveBeenCalled();
+    expect(onSaved).not.toHaveBeenCalled();
+    expect(save.disabled).toBe(false);
+
+    save.click();
+    await settle();
+    expect(setFleetGpuClock).toHaveBeenCalledTimes(1);
+    expect(updateSettings).toHaveBeenCalledTimes(2);
+    expect(onSaved).toHaveBeenCalledWith(SETTINGS);
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
   it("resets installed boot hooks when Full capacity is selected on already-unlocked GPUs", async () => {
     vi.mocked(fetchGpuClock).mockResolvedValue({
       ...READY,
