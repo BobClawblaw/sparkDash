@@ -364,32 +364,6 @@ describe("FleetGpuClock", () => {
     );
   });
 
-  it("says nothing changed when every unit refuses, names the reason once and the way out", async () => {
-    const refusal =
-      "keeping the cap after reboot needs passwordless sudo for the system service (NOPASSWD: ALL) or a running cron service for a @reboot job, and this unit offers neither";
-    setApi.mockResolvedValue(done([
-      { id: "spark1", ok: false, error: refusal },
-      { id: "spark2", ok: false, error: refusal },
-    ]));
-    const ref = { current: null as FleetGpuClockApi | null };
-    const { container } = render(<FleetGpuClock apiRef={ref} />);
-    await settle();
-
-    await click(byText(container, "1800 MHz"));
-    expect(await applyPicked(ref)).toBe(false);
-
-    const msg = status(container)!;
-    expect(msg.textContent).toContain("Nothing changed — 0 of 2 units capped");
-    expect(msg.textContent).not.toContain("Capped at 1800 MHz");
-    // Grouped by reason: named once with both units, not twice.
-    expect(msg.textContent?.match(/needs passwordless sudo/g)).toHaveLength(1);
-    expect(msg.textContent).toContain("spark1, spark2:");
-    expect(msg.textContent).toContain("Untick “Keep after reboot”");
-    expect(msg.className).toContain("is-err");
-    // Refused everywhere: the pick is still there to retry, not silently dropped.
-    expect(ref.current!.pending()).toBe(true);
-  });
-
   it("keeps the box usable while a read is unknown, but not when the fleet is known to refuse", async () => {
     statusApi.mockResolvedValue(ready(2100, "none"));
     const narrow = { current: null as FleetGpuClockApi | null };

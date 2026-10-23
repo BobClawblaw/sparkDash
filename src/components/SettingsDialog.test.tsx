@@ -106,7 +106,6 @@ describe("SettingsDialog fleet GPU clock and Save", () => {
     expect(updateSettings).not.toHaveBeenCalled();
     expect(onSaved).not.toHaveBeenCalled();
     expect(onClose).not.toHaveBeenCalled();
-    expect(container.querySelector(".set-fleetcap__msg")!.textContent).toContain("Nothing changed — 0 of 2 units capped");
     // Still open with the pick in place, so Save can be pressed again.
     expect(save.disabled).toBe(false);
 

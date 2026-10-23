@@ -238,9 +238,11 @@ export function FleetGpuClock({
       setMsg({
         ok: failed.length === 0 && !nothingChanged,
         text: nothingChanged
-          ? `Nothing changed — 0 of ${res.results.length} units ${capMHz === null ? "unlocked" : "capped"}${
-              skipped.length ? `, ${skipped.length} skipped` : ""
-            }`
+          ? failed.length
+            ? `No unit completed the requested change — some changes may have applied${skipped.length ? `, ${skipped.length} skipped` : ""}`
+            : `Nothing changed — 0 of ${res.results.length} units ${capMHz === null ? "unlocked" : "capped"}${
+                skipped.length ? `, ${skipped.length} skipped` : ""
+              }`
           : `${capMHz === null ? "Full capacity" : `Capped at ${capMHz} MHz`} — ${capped} of ${
               res.results.length
             } units${skipped.length ? `, ${skipped.length} skipped` : ""}${howKept}`,

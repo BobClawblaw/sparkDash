@@ -103,6 +103,14 @@ case "$1" in
   -r) [ -f ${path.join(root, "crontab.readonly")} ] && { echo "crontab: installing new crontab failed" >&2; exit 1; }
       [ -f ${crontab} ] || { echo "no crontab for $(id -un)" >&2; exit 1; }; rm -f ${crontab} ;;
   *) [ -f ${path.join(root, "crontab.readonly")} ] && { echo "crontab: installing new crontab failed" >&2; exit 1; }
+     # Match Debian cron's command-field limit, rather than accepting a boot
+     # hook that the target's real crontab would refuse to install.
+     while IFS= read -r line; do
+       case "$line" in
+         "@reboot "*) command=\${line#@reboot }
+           [ "\${#command}" -le 998 ] || { echo "command too long" >&2; exit 1; } ;;
+       esac
+     done < "$1"
      ${cronMangles ? `sed 's/-lgc [0-9,]*/-lgc 0,9/' "$1" > ${crontab}` : `cp "$1" ${crontab}`} ;;
 esac
 `,

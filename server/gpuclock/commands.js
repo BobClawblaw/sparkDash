@@ -53,24 +53,22 @@ export const CRON_TAG = "sparkdash-gpu-clock-cap";
  * No `%` may appear: crontab would read one as a newline.
  */
 function cronLine({ minMHz, maxMHz }) {
-  const lock = `9>>"$D/${MARKER_FILE}.lock"`;
-  const failed = `"$D/${MARKER_FILE}.failed"`;
+  // Debian cron limits the command field to 998 bytes. Share the marker path,
+  // ownership/lock check and logger so retry/failure handling stays below it.
   // Inside the lock: 3 = superseded, 4 = no lock, 5 = crontab unreadable, 1 = refused.
-  const owned = "cur; c=$?; [ $c = 1 ] && exit 3; [ $c = 0 ] || exit 5;";
-  const log = `logger -t sparkdash "GPU clock cap ${maxMHz} MHz was not applied at boot`;
   return `${[
-    `@reboot J=@@JOB@@; C=@@CRON@@; D="@@ALT_DIR@@"; B=@@BOOTID@@; F=@@FLOCK@@;`,
-    `cur() { L=$($C -l 2>&1) || { case $L in *"no crontab for"*) return 1 ;; esac; return 2; };`,
-    `case $L in *"@reboot J=$J; "*) return 0 ;; esac; return 1; };`,
+    `@reboot J=@@JOB@@; C=@@CRON@@; D="@@ALT_DIR@@"; B=@@BOOTID@@; F=@@FLOCK@@; M="$D/${MARKER_FILE}";`,
+    `take() { $F -w 120 9 || exit 4; L=$($C -l 2>&1);`,
+    `case $?:"$L" in 0:*"@reboot J=$J; "*) ;; 0:*|*:*"no crontab for"*) exit 3 ;; *) exit 5 ;; esac; };`,
+    `log() { logger -t sparkdash "GPU clock cap ${maxMHz} MHz was not applied at boot$1"; };`,
     `for i in 1 2 3; do /bin/sleep 20; /bin/mkdir -p "$D";`,
-    `( $F -w 120 9 || exit 4; ${owned} @@SUDO@@ -n @@NV@@ -lgc ${minMHz},${maxMHz} || exit 1;`,
-    `echo "${maxMHz} $(/bin/cat $B)" > "$D/${MARKER_FILE}" && /bin/rm -f ${failed} ) ${lock};`,
-    `r=$?; { [ $r = 0 ] || [ $r = 3 ]; } && exit 0;`,
+    `( take; @@SUDO@@ -n @@NV@@ -lgc ${minMHz},${maxMHz} || exit 1;`,
+    `echo "${maxMHz} $(/bin/cat $B)" > "$M" && /bin/rm -f "$M.failed" ) 9>>"$M.lock";`,
+    `case $? in 0|3) exit 0 ;; esac;`,
     "done;",
-    `( $F -w 120 9 || exit 4; ${owned} /bin/cat $B > ${failed} || exit 6 ) ${lock}; r=$?;`,
-    `case $r in 0|3|5|6) ;; *) r=4 ;; esac;`,
-    `case $r in 3) ;; 4) ${log}: the change lock could not be taken" ;;`,
-    `5) ${log}: the crontab could not be read" ;; *) ${log}" ;; esac;`,
+    `( take; /bin/cat $B > "$M.failed" || exit 6 ) 9>>"$M.lock"; r=$?;`,
+    `case $r in 3) ;; 0|6) log ;; 5) log ": the crontab could not be read" ;;`,
+    `*) log ": the change lock could not be taken" ;; esac;`,
     `# ${CRON_TAG}`,
   ].join(" ")}\n`;
 }
