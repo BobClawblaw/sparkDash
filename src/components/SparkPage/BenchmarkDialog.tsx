@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { decodeBenchSamplingLabel } from "./decodeSampling";
+import { decodeBenchSamplingLabel, decodeBenchSamplingMixed } from "./decodeSampling";
 import { createPortal } from "react-dom";
 import "../../styles/dialogs.css";
 import {
@@ -201,7 +201,6 @@ export function BenchmarkDialog({
   const [promptType, setPromptType] = useState<DecodeBenchPromptType>(DEFAULT_PROMPT_TYPE);
   const [temperatureDraft, setTemperatureDraft] = useState(String(DEFAULT_TEMPERATURE));
   const [thinking, setThinking] = useState(DEFAULT_THINKING);
-  const effectiveThinking = promptType === "prose" && thinking;
   const [job, setJob] = useState<DecodeBenchJob | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [starting, setStarting] = useState(false);
@@ -450,7 +449,7 @@ export function BenchmarkDialog({
         modelId: selectedModel || undefined,
         promptType,
         temperature,
-        thinking: effectiveThinking,
+        thinking,
         ...(remoteTarget
           ? { host: remoteTarget.host, tls: remoteTarget.tls }
           : {}),
@@ -552,7 +551,7 @@ export function BenchmarkDialog({
                   <h3 className="bench-sheet__section-title">Type</h3>
                   <p className="bench-sheet__hint">
                     {DECODE_BENCH_TYPE_META.find((t) => t.id === promptType)?.hint}
-                    {` · temp ${temperatureDraft || "?"}, thinking ${effectiveThinking ? "on" : "off"}`}
+                    {` · temp ${temperatureDraft || "?"}, thinking ${thinking ? "on" : "off"}`}
                   </p>
                 </div>
                 <div
@@ -580,7 +579,6 @@ export function BenchmarkDialog({
                 </div>
               </div>
 
-              {promptType === "prose" && (
               <div className="bench-field">
                 <div className="bench-field__head">
                   <h3 className="bench-sheet__section-title">Thinking</h3>
@@ -604,14 +602,17 @@ export function BenchmarkDialog({
                   ))}
                 </div>
               </div>
-              )}
 
               <div className="bench-field">
                 <div className="bench-field__head">
                   <label htmlFor="bench-temperature" className="bench-sheet__section-title">
                     Temperature
                   </label>
-                  <p className="bench-sheet__hint">Default 0.7 · 0 is greedy · 0 to 2</p>
+                  <p className="bench-sheet__hint">
+                    Default 0.7 · 0 is greedy · 0 to 2. Before v2.70 the bench always ran at temp 0 with thinking
+                    off: set 0 to compare with those runs. Temp above 0 can be much slower on servers that use
+                    speculative decoding.
+                  </p>
                 </div>
                 <input
                   id="bench-temperature"
@@ -851,6 +852,12 @@ export function BenchmarkDialog({
         )}
         {history.length > 0 && (
           <PageCard title={`History · ${history.length}`}>
+            {decodeBenchSamplingMixed(history.map((h) => h.config)) && (
+              <p className="bench-sheet__hint" role="note">
+                These runs use different temperature or thinking settings. Compare tok/s only between runs with
+                the same settings; temp above 0 can be several times slower.
+              </p>
+            )}
             <HistoryTable
               rows={history.map(decodeHistoryRow)}
               activeId={job?.benchId ?? null}

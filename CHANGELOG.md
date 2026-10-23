@@ -17,6 +17,8 @@ Format: version sections are listed newest first.
 
 
 ### Changed
+- **Decode bench: thinking on/off for every type.** The Thinking choice was offered only for Prose; Structured, Code and JSON always ran with thinking off. It is now available for all four types and defaults to on, as for Prose. Reasoning tokens count toward decode tok/s; with a small max-tokens budget a thinking run may end before the answer itself starts. API callers that leave out `thinking` now get thinking on for every type.
+- **Decode bench: temperature is called out when comparing runs.** Since v2.70.0 the decode bench defaults to temperature 0.7 with thinking on; earlier versions always ran at temperature 0 with thinking off. On servers that use speculative decoding, temperature above 0 can be several times slower (GLM-5.3-Flash-EXL3: about 87 tok/s at temp 0, about 27 at 0.7, with or without thinking), so a new run could look like a regression against an old one. The temperature field now says how the old runs were made and to set 0 to compare with them; each history row shows its temperature and thinking setting (runs from before 2.70 show `temp 0 · thinking off`); and the history card warns when its runs used different settings.
 - **History panel sits in the hardware column.** On wide screens the unit page's History panel (Settings → Metrics history) now closes the left column, right under GPU, memory, CPU and Models, instead of starting below both columns, which left a large empty area under the hardware panels whenever the right column (LLM, storage, network) was taller. Its charts follow the panel's own width: two per row from 560 px, three from 900 px. Below 1280 px, where the columns stack, it stays last.
 
 ### Fixed

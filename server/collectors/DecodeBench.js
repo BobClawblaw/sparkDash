@@ -843,13 +843,8 @@ export class DecodeBenchManager {
     }
     temperature = Math.round(temperature * 100) / 100;
     const promptType = normalizeDecodeBenchType(rawType);
-    // Only prose is selectable: structured/code/json need the format-bound answer inside the token budget.
     const thinking =
-      promptType !== "prose"
-        ? false
-        : rawThinking == null
-          ? DEFAULT_THINKING
-          : rawThinking === true || rawThinking === "true";
+      rawThinking == null ? DEFAULT_THINKING : rawThinking === true || rawThinking === "true";
     const debugOn = Boolean(debug);
     const benchId = randomUUID();
     const abort = new AbortController();

@@ -6,3 +6,8 @@ export function decodeBenchSamplingLabel(config: Pick<DecodeBenchConfig, "temper
   const thinking = typeof config?.thinking === "boolean" ? config.thinking : false;
   return `temp ${temp} · thinking ${thinking ? "on" : "off"}`;
 }
+
+/** True when the runs used more than one temperature / thinking setting, so their tok/s are not comparable. */
+export function decodeBenchSamplingMixed(configs: Array<Pick<DecodeBenchConfig, "temperature" | "thinking"> | null | undefined>): boolean {
+  return new Set(configs.map(decodeBenchSamplingLabel)).size > 1;
+}
