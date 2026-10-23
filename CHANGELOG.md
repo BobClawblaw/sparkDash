@@ -10,6 +10,7 @@ Format: version sections are listed newest first.
 ## [Unreleased]
 
 ### Fixed
+- **TensorFold cached prompt totals** now read the dedicated Prometheus cache counter, falling back to prefix-cache hits and clamping to the same scrape's prompt total. Thanks to @eleata (#272).
 - **Contributor onboarding links resolve again.** AGENTS.md and CODEBASE.md are tracked rather than ignored, with current architecture, conventions and test commands, plus an onboarding-link regression. Reported by @eXsoR65 (#256).
 - **RoCE explains its traffic-counter scope and cumulative pause totals**, so netdev rates are not mistaken for RDMA payload throughput. Reported by @Nipale-ai (#270); dedicated RDMA throughput counters remain a feature request.
 - **TensorFold per-stream decode and effective prefill rates** use completion-window counters with noise guards and a bounded prefill hold. Effective rates include cache credit and have no GB10-specific upper cap. Thanks to @EagleClaw89 (#252).
