@@ -23,7 +23,7 @@ describe("history rows", () => {
     } as unknown as DecodeBenchJob;
     const row = decodeHistoryRow(job);
     expect(row.headline).toBe("90.0 tok/s");
-    expect(row.detail).toBe("peak at ×4 · 30.0/stream at ×1");
+    expect(row.detail).toBe("peak at ×4 · 30.0/stream at ×1 · temp 0 · thinking off");
     expect(row.label).toBe("×1, 4");
     expect(row.model).toBe("qwen");
   });
