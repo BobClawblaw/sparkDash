@@ -201,7 +201,6 @@ export function BenchmarkDialog({
   const [promptType, setPromptType] = useState<DecodeBenchPromptType>(DEFAULT_PROMPT_TYPE);
   const [temperatureDraft, setTemperatureDraft] = useState(String(DEFAULT_TEMPERATURE));
   const [thinking, setThinking] = useState(DEFAULT_THINKING);
-  const effectiveThinking = promptType === "prose" && thinking;
   const [job, setJob] = useState<DecodeBenchJob | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [starting, setStarting] = useState(false);
@@ -450,7 +449,7 @@ export function BenchmarkDialog({
         modelId: selectedModel || undefined,
         promptType,
         temperature,
-        thinking: effectiveThinking,
+        thinking,
         ...(remoteTarget
           ? { host: remoteTarget.host, tls: remoteTarget.tls }
           : {}),
@@ -552,7 +551,7 @@ export function BenchmarkDialog({
                   <h3 className="bench-sheet__section-title">Type</h3>
                   <p className="bench-sheet__hint">
                     {DECODE_BENCH_TYPE_META.find((t) => t.id === promptType)?.hint}
-                    {` · temp ${temperatureDraft || "?"}, thinking ${effectiveThinking ? "on" : "off"}`}
+                    {` · temp ${temperatureDraft || "?"}, thinking ${thinking ? "on" : "off"}`}
                   </p>
                 </div>
                 <div
@@ -580,7 +579,6 @@ export function BenchmarkDialog({
                 </div>
               </div>
 
-              {promptType === "prose" && (
               <div className="bench-field">
                 <div className="bench-field__head">
                   <h3 className="bench-sheet__section-title">Thinking</h3>
@@ -604,7 +602,6 @@ export function BenchmarkDialog({
                   ))}
                 </div>
               </div>
-              )}
 
               <div className="bench-field">
                 <div className="bench-field__head">

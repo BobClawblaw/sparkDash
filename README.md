@@ -67,7 +67,7 @@ Monitored units run **Linux**, **macOS**, or **Windows** (a Windows PC with an N
 ## Latest version changelog
 
 ### Version 2.70.0
-- **Decode benchmark**: temperature (default 0.7) and, for the Prose type, thinking on or off are selectable; the copied result text and the share card show both.
+- **Decode benchmark**: temperature (default 0.7) and thinking on or off are selectable for every type; the copied result text and the share card show both.
 - **NVIDIA Flare** is detected and its tok/s monitored from `/metrics`.
 - **Tool Eval Bench**: compare a run on one Spark with a run from another, and expand the scenario list to a taller view.
 - **Overview** cards show CPU temperature and power; a **Cost compare** page prices fleet usage as any hosted model; Radiance and Strata engines are recognised.
@@ -134,7 +134,7 @@ Full history: [CHANGELOG.md](./CHANGELOG.md)
 | **ComfyUI** | Opt-in probe: queue/jobs, progress, cancel, Open link, inventory, overview chip |
 | **Hermes Agent** | Opt-in per unit: background update check (10 min), status badges, one-click or batch `hermes update` |
 | **Tailnet** | Opt-in probe: flags a unit that is healthy on the LAN but off its tailnet |
-| **Decode benchmark** | Multi-concurrency streaming decode tok/s; type picker (Structured / Prose / Code / JSON). Code is a different Python task per stream. Lab protocol (temp 0, thinking off); persisted last run. Remote units: LAN HTTP, or SSH tunnel to loopback. **Remote** button for an on-demand HTTPS/host:port target |
+| **Decode benchmark** | Multi-concurrency streaming decode tok/s; type picker (Structured / Prose / Code / JSON). Code is a different Python task per stream. Temperature (default 0.7) and thinking on/off (default on) are selectable; persisted last run. Remote units: LAN HTTP, or SSH tunnel to loopback. **Remote** button for an on-demand HTTPS/host:port target |
 | **Prefill benchmark** | Context-size sweep (1k–300k) of prefill tok/s and TTFT; unique prefix per size; persisted last run. Same remote targeting as decode |
 | **Quality benchmark** | Fixed, seeded quality suite (QA, reasoning, arithmetic, state tracking, GSM8K, MMLU, plus optional instruction following and long-context recall) at temperature 0; per-category and overall score; last 30 runs kept; paired compare with McNemar p-value. Same remote targeting as decode |
 | **Prompt Showcase** | Full-page multi-terminal LLM streaming demo (up to 32 prompts) with live tok/s and copy-out |
