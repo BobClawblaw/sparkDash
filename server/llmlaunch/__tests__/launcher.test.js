@@ -127,6 +127,30 @@ test("start streams the script output and reports exit 0 without leaking the exi
   assert.deepEqual(mgr.readJob("s1", started.job.id, last).lines, []);
 });
 
+test("completion drains a delayed follower, including the final unterminated line", async () => {
+  const home = tmpDir("sd-home-");
+  try {
+    const bin = path.join(home, "bin");
+    writeScript(bin, "tail", 'sleep 2\nexec /usr/bin/tail "$@"');
+    const llm = path.join(home, "llm");
+    writeScript(llm, "start.sh", "printf 'ready\\nfinal π'; exit 7");
+    const { mgr } = realManager(home, { PATH: `${bin}:${process.env.PATH}` });
+    const launcher = mgr.store.add("s1", { name: "Demo", dir: llm }).launcher;
+    const { job } = mgr.startJob(spark, launcher, "start");
+    await until(() => mgr.latestJob("s1").status !== "running");
+    const read = mgr.readJob("s1", job.id, 0);
+    assert.equal(read.job.status, "failed");
+    assert.equal(read.job.exitCode, 7);
+    assert.deepEqual(read.lines.slice(1).map((line) => line.text), ["ready", "final π"]);
+    assert.match(
+      fs.readFileSync(path.join(home, ".cache/sparkdash/llm", `${launcher.id}.log`), "utf8"),
+      /ready\nfinal π$/,
+    );
+  } finally {
+    fs.rmSync(home, { recursive: true, force: true });
+  }
+});
+
 test("a failing start script is reported with its exit code", async () => {
   const home = tmpDir("sd-home-");
   const llm = path.join(home, "llm");

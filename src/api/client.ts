@@ -6,6 +6,7 @@ import type {
   AlertsResponse,
   ActivityEvent,
   ActivityEventsPage,
+  GpuClockPersistKind,
   EnergyHistory,
   MonthlyEnergy,
   TokenHistory,
@@ -16,6 +17,7 @@ import type {
   InferenceActivity,
   HermesBatchUpdateResponse,
   GpuClockStatus,
+  FleetGpuClockResult,
   HermesUpdatesResponse,
   LauncherAction,
   LauncherJob,
@@ -605,22 +607,37 @@ export function fetchGpuClockCommand(
   return apiFetch(`/api/sparks/${encodeURIComponent(id)}/gpu-clock/command?${params}`);
 }
 
-/** Cap the GPU graphics clock now; `persist` also installs the boot service. */
+/** Cap the GPU graphics clock now; `persist` also installs the boot hook this unit can take. */
 export function setGpuClock(
   id: string,
   body: { maxMHz: number; minMHz?: number; persist: boolean; sudoPassword?: string }
-): Promise<{ success: boolean; capMHz: number; persist: boolean }> {
+): Promise<{ success: boolean; capMHz: number; persist: boolean; persistKind: GpuClockPersistKind }> {
   return apiFetch(`/api/sparks/${encodeURIComponent(id)}/gpu-clock`, {
     method: "PUT",
     body: JSON.stringify(body),
   });
 }
 
-/** Remove the cap and the boot service. */
+/** Remove the cap and its boot hook. */
 export function resetGpuClock(id: string, sudoPassword?: string): Promise<{ success: boolean }> {
   return apiFetch(`/api/sparks/${encodeURIComponent(id)}/gpu-clock`, {
     method: "DELETE",
     ...(sudoPassword ? { body: JSON.stringify({ sudoPassword }) } : {}),
+  });
+}
+
+/** POST /api/sparks/gpu-clock-all: cap (or, with reset, clear) the cap on every Spark. */
+export function setFleetGpuClock(maxMHz: number, persist = false): Promise<{ success: boolean; applied: number; results: FleetGpuClockResult[] }> {
+  return apiFetch("/api/sparks/gpu-clock-all", {
+    method: "POST",
+    body: JSON.stringify({ maxMHz, persist }),
+  });
+}
+
+export function resetFleetGpuClock(): Promise<{ success: boolean; applied: number; results: FleetGpuClockResult[] }> {
+  return apiFetch("/api/sparks/gpu-clock-all", {
+    method: "POST",
+    body: JSON.stringify({ reset: true }),
   });
 }
 

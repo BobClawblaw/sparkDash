@@ -26,12 +26,15 @@ const CODE_STATUS = {
   "no-nvidia": 409,
   "no-gpu": 409,
   "no-systemd": 409,
+  busy: 409,
+  "lock-failed": 409,
   range: 400,
   "bad-output": 502,
   "bad-password": 403,
   // The action reached the unit and failed there (nvidia-smi, systemd, the marker write).
   "lgc-failed": 422,
   "service-failed": 422,
+  "cron-failed": 422,
   "rgc-failed": 422,
   "marker-failed": 422,
 };
@@ -44,13 +47,24 @@ const PASSWORD_ATTEMPTS_GLOBAL = 9;
 
 const httpError = (status, message, code) => Object.assign(new Error(message), { status, code });
 
+/**
+ * Why this unit cannot take a cap, or null when it can. One source of truth for
+ * the per-unit routes and the fleet batch, which reports the reason per unit
+ * instead of failing the whole call.
+ */
+export function gpuClockUnsupportedReason(spark) {
+  if (!spark) return "Spark not found";
+  if (spark.kind === "host") return "GPU clock caps are only supported on Spark units";
+  if (spark.platform === "windows" || spark.platform === "darwin") {
+    return "GPU clock caps are only supported on Linux Spark units";
+  }
+  return null;
+}
+
 /** @param {object} spark registry entry */
 export function assertSupported(spark) {
-  if (!spark) throw httpError(404, "Spark not found");
-  if (spark.kind === "host") throw httpError(400, "GPU clock caps are only supported on Spark units");
-  if (spark.platform === "windows" || spark.platform === "darwin") {
-    throw httpError(400, "GPU clock caps are only supported on Linux Spark units");
-  }
+  const reason = gpuClockUnsupportedReason(spark);
+  if (reason) throw httpError(spark ? 400 : 404, reason);
 }
 
 /**
@@ -176,7 +190,8 @@ export class GpuClockManager {
     }
   }
 
-  /** Read-only: hardware maximum, current cap, sudo availability, service state. */
+  /** Read-only: hardware maximum, current cap, sudo availability, what keeps the
+   * cap across boots here, and the state of both boot hooks. */
   async status(spark) {
     assertSupported(spark);
     const res = await this._exec(spark, buildStatusProgram(this._paths), STATUS_TIMEOUT_MS);
@@ -186,16 +201,26 @@ export class GpuClockManager {
       throw this._fail(res);
     }
     const num = (v) => (/^\d+$/.test(v ?? "") ? Number(v) : null);
+    const clocks = (v) => (/^\d+,\d+$/.test(v ?? "") ? v : null);
     return {
       supported: true,
       hwMaxMHz: num(res.HWMAX),
       capMHz: num(res.CAP),
       sudo: ["root", "yes", "no"].includes(res.SUDO) ? res.SUDO : "no",
+      /** What "keep after reboot" would use here: the systemd unit, the user's
+       * @reboot cron line, or nothing. */
+      persistKind: ["unit", "cron", "none"].includes(res.PERSIST_KIND) ? res.PERSIST_KIND : "none",
       service: {
         installed: res.SVC_INSTALLED === "1",
-        clocks: /^\d+,\d+$/.test(res.SVC_CLOCKS ?? "") ? res.SVC_CLOCKS : null,
+        clocks: clocks(res.SVC_CLOCKS),
         enabled: res.SVC_ENABLED || null,
         active: res.SVC_ACTIVE || null,
+      },
+      cron: {
+        installed: res.CRON_INSTALLED === "1",
+        clocks: clocks(res.CRON_CLOCKS),
+        /** The @reboot job ran at this boot and could not re-apply the cap. */
+        failed: res.CRON_FAILED === "1",
       },
     };
   }
@@ -223,8 +248,9 @@ export class GpuClockManager {
   }
 
   /**
-   * Apply a cap; `persist` installs the boot service. `body.sudoPassword` (optional) is used
-   * for sudo on this one call and never stored.
+   * Apply a cap; `persist` installs the boot hook the unit can take (systemd unit, else an
+   * @reboot cron line). `body.sudoPassword` (optional) is used for sudo on this one call and
+   * never stored.
    */
   async apply(spark, body) {
     assertSupported(spark);
@@ -233,7 +259,13 @@ export class GpuClockManager {
     return this._exclusive(spark, async () => {
       const program = buildApplyProgram(req, { ...this._paths, password: password != null });
       const res = await this._privileged(spark, program, password);
-      return { capMHz: Number(res.CAP) || req.maxMHz, persist: res.PERSIST === "1", minMHz: req.minMHz };
+      const persisted = res.PERSIST === "1";
+      return {
+        capMHz: Number(res.CAP) || req.maxMHz,
+        persist: persisted,
+        persistKind: persisted ? (res.PERSIST_KIND === "cron" ? "cron" : "unit") : "none",
+        minMHz: req.minMHz,
+      };
     });
   }
 

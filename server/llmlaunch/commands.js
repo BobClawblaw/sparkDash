@@ -88,24 +88,28 @@ alive() {
   fi
   kill -0 -- "-$PID" 2>/dev/null
 }
-# $1: tail -n argument. Streams the log until the script group is gone, or until the
-# process that started us (sshd / the dashboard) goes away, so an abandoned job never
-# leaves a follow loop behind.
+# $1: tail -n argument. A lifetime monitor follows the whole script group, not
+# just its leader. GNU tail drains the log after that monitor exits, before we
+# emit the exit marker; no fixed delay can guarantee its last read has happened.
 follow() {
   P0=$(ppidof $$)
-  tail -n "$1" -F "$L" 2>/dev/null &
+  (
+    while alive; do
+      [ "$(ppidof $$)" = "$P0" ] || exit 1
+      sleep 1
+    done
+  ) &
+  W=$!
+  tail --pid="$W" -n "$1" -F "$L" 2>/dev/null &
   T=$!
-  trap 'kill "$T" 2>/dev/null' EXIT
-  GONE=
-  while alive; do
-    if [ "$(ppidof $$)" != "$P0" ]; then GONE=1; break; fi
-    kill -0 "$T" 2>/dev/null || break
-    sleep 1
-  done
-  if [ -n "$GONE" ]; then kill "$T" 2>/dev/null; exit 0; fi
-  sleep 0.6
-  kill "$T" 2>/dev/null
-  wait "$T" 2>/dev/null
+  trap 'kill "$T" "$W" 2>/dev/null' EXIT
+  if ! wait "$T"; then
+    kill "$W" 2>/dev/null
+    wait "$W" 2>/dev/null
+    exit 1
+  fi
+  wait "$W" || exit 0
+  trap - EXIT
   alive || rm -f "$P"
 }
 # World-writable? (also true when the mode cannot be read)
