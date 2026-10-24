@@ -100,6 +100,19 @@ follow() {
     done
   ) &
   W=$!
+  # BSD/macOS tail has no --pid: follow with a plain tail and stop it shortly after the monitor ends.
+  if ! tail --pid=$$ -n 0 /dev/null >/dev/null 2>&1; then
+    tail -n "$1" -F "$L" 2>/dev/null &
+    T=$!
+    trap 'kill "$T" "$W" 2>/dev/null' EXIT
+    if ! wait "$W"; then kill "$T" 2>/dev/null; exit 0; fi
+    sleep 0.6
+    kill "$T" 2>/dev/null
+    wait "$T" 2>/dev/null
+    trap - EXIT
+    alive || rm -f "$P"
+    return 0
+  fi
   tail --pid="$W" -n "$1" -F "$L" 2>/dev/null &
   T=$!
   trap 'kill "$T" "$W" 2>/dev/null' EXIT

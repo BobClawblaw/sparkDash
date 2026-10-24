@@ -151,6 +151,33 @@ test("completion drains a delayed follower, including the final unterminated lin
   }
 });
 
+test("start works when tail has no --pid option (BSD/macOS tail)", async () => {
+  const home = tmpDir("sd-home-");
+  try {
+    const bin = path.join(home, "bin");
+    writeScript(
+      bin,
+      "tail",
+      'for a in "$@"; do case "$a" in --pid*) echo "tail: illegal option -- -" >&2; exit 1 ;; esac; done\nexec /usr/bin/tail "$@"',
+    );
+    const llm = path.join(home, "llm");
+    writeScript(llm, "start.sh", "echo loading; sleep 1; printf 'ready\\nfinal'; exit 5");
+    const { mgr } = realManager(home, { PATH: `${bin}:${process.env.PATH}` });
+    const launcher = mgr.store.add("s1", { name: "Demo", dir: llm }).launcher;
+    const { job } = mgr.startJob(spark, launcher, "start");
+    await until(() => mgr.latestJob("s1").status !== "running");
+    const read = mgr.readJob("s1", job.id, 0);
+    assert.equal(read.job.status, "failed");
+    assert.equal(read.job.exitCode, 5);
+    const texts = read.lines.map((line) => line.text);
+    assert.ok(texts.includes("loading"), texts.join("|"));
+    assert.ok(texts.includes("ready"), texts.join("|"));
+    assert.ok(!texts.some((t) => t.includes("__SDEXIT__")));
+  } finally {
+    fs.rmSync(home, { recursive: true, force: true });
+  }
+});
+
 test("a failing start script is reported with its exit code", async () => {
   const home = tmpDir("sd-home-");
   const llm = path.join(home, "llm");
