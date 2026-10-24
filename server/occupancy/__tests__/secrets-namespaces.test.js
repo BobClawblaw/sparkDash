@@ -124,4 +124,20 @@ test("a missing encryption key refuses to replace the secrets file", () => {
   assert.equal(child.status, 0, child.stderr || child.stdout);
   assert.deepEqual(fs.readFileSync(process.env.SPARKS_SECRETS_PATH), before);
 });
+
+test("reloading helper tokens for each poll does not repeat the load log line", async () => {
+  const { loadHelperTokens } = await import("../../secretsStore.js");
+  saveHelperTokens(new Map([["mama", "helper-token"]]));
+  const lines = [];
+  const original = console.log;
+  console.log = (...args) => lines.push(args.join(" "));
+  try {
+    loadHelperTokens();
+    loadHelperTokens();
+    loadHelperTokens();
+  } finally {
+    console.log = original;
+  }
+  assert.ok(lines.filter((l) => l.includes("helper token")).length <= 1, lines.join("|"));
+});
 });

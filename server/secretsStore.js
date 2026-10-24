@@ -125,6 +125,8 @@ function decrypt(blobB64, key) {
   return Buffer.concat([decipher.update(data), decipher.final()]).toString("utf8");
 }
 
+let lastLoggedHelperTokens = -1;
+
 /**
  * @returns {{
  *   passwords: Map<string, string>,
@@ -223,9 +225,11 @@ export function loadSecrets() {
           );
         }
       }
-      if (helperTokens.size > 0) {
+      // The occupancy poller reloads these every tick: log only when the count changes.
+      if (helperTokens.size > 0 && helperTokens.size !== lastLoggedHelperTokens) {
         console.log(`[secretsStore] Loaded ${helperTokens.size} helper token(s) from encrypted store`);
       }
+      lastLoggedHelperTokens = helperTokens.size;
       if (failedHelpers > 0) {
         console.warn(
           `[secretsStore] ${failedHelpers} helper token(s) could not be decrypted — re-enter in the harness wizard`
