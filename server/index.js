@@ -21,6 +21,7 @@ import {
 import { authStatus, authorizeUpgrade, createAuthMiddleware, createHostGuardMiddleware, isLoopbackBind, setTailscaleName } from "./auth.js";
 import { inspectHealth } from "./health.js";
 import { getSettings, updateSettings, loadSettings } from "./settings.js";
+import { MqttPublisher } from "./mqtt/MqttPublisher.js";
 import { broadcastForLanIp, effectiveMac, normalizeMac, sendWol } from "./wol.js";
 import { remoteShutdownCommand, spawnLocalShutdown } from "./shutdown.js";
 import { GpuClockManager } from "./gpuclock/GpuClockManager.js";
@@ -305,6 +306,13 @@ const eventLog = new EventLog({
   // The Activity page browses history, so keep far more than the Overview card shows.
   max: 2000,
 });
+
+// ─── MQTT bridge (opt-in, Settings → MQTT) ───────────────
+// Republishes the event stream and per-Spark availability to a broker the
+// user configures. Best-effort: a down broker drops messages rather than
+// ever blocking a poll loop (the client retries on its own in the meantime).
+const mqttPublisher = new MqttPublisher({ getSettings });
+eventLog.subscribe((event) => mqttPublisher.publishEvent(event));
 
 // ─── Unit history (so a fresh page can draw the last hours at once) ─────
 // GPU: a dense ~2 s series for 8 h (Overview/Spark charts) and a minute-resolution series for
@@ -705,6 +713,8 @@ app.delete("/api/sparks/:id", (req, res) => {
     launcherStatusCache.delete(req.params.id);
     unitHistory.remove(req.params.id);
     toolEvalManager.removeSpark(req.params.id);
+    // Clear its retained status/metrics topics so MQTT subscribers stop seeing it.
+    mqttPublisher.removeUnit(req.params.id);
     recordEvent({
       type: "spark.removed",
       severity: "info",
@@ -749,6 +759,8 @@ app.put("/api/settings", (req, res) => {
       }
       restartBroadcast();
     }
+    // MQTT broker URL / prefix / enablement changed: reconnect (a no-op otherwise).
+    mqttPublisher.applySettings();
     res.json({ ...newSettings, inferenceActivityEnabled: inferenceActivity.enabled });
   } catch (err) {
     res.status(400).json({ error: err.message });
@@ -2315,12 +2327,24 @@ function broadcastPayload(payload) {
 }
 
 /**
+ * Hand the fleet to the MQTT bridge: entries with per-domain provenance,
+ * exactly what /metrics renders. Built only when MQTT is on, so the default
+ * (off) install pays nothing per tick; the publisher itself resends a topic
+ * only when its value changed.
+ */
+function publishMqttFleet() {
+  if (!getSettings().mqttEnabled) return;
+  mqttPublisher.publishFleet(metricsEntries(registry.sparkIds.map((id) => monitors.get(id))));
+}
+
+/**
  * Broadcast now instead of on the next tick.
  * Used after a user action (manual refresh / hermes check / update) so the
  * UI reflects the result right away.
  */
 function forceBroadcast() {
   broadcastPayload(buildSnapshotPayload());
+  publishMqttFleet();
 }
 
 function startBroadcast() {
@@ -2331,6 +2355,8 @@ function startBroadcast() {
     // payload carries the alerts this very snapshot produced. They run whether
     // or not a dashboard is open.
     alertsRuntime.tick(sparks);
+    // MQTT subscribers are not dashboards, so publish before the no-client skip below.
+    publishMqttFleet();
     // Nobody is listening: skip serialising every unit's snapshot. A client that
     // connects later gets a fresh one from the connection handler.
     if (wss.clients.size === 0) return;
@@ -2350,6 +2376,7 @@ function restartBroadcast() {
 
 // ─── Start ───────────────────────────────────────────────
 loadSettings();
+mqttPublisher.applySettings();
 const startupPreflight = inspectStartupPreflight(BIND_HOST);
 logStartupPreflight(startupPreflight, BIND_HOST, PORT);
 
@@ -2423,6 +2450,11 @@ async function shutdown(signal) {
   } catch (err) {
     console.error("[sparkDash] failed to flush event log:", err.message);
   }
+  // Publishes the dashboard's offline status and waits (bounded) for the broker's
+  // ack before closing; awaited below alongside the LLM dispatcher close.
+  const mqttStopped = mqttPublisher.stop().catch((err) => {
+    console.error("[sparkDash] failed to stop MQTT publisher:", err.message);
+  });
   try {
     unitHistoryRuntime.stop();
   } catch (err) {
@@ -2435,7 +2467,7 @@ async function shutdown(signal) {
   }
   llmTokenRuntime.stop();
   const energyPersistenceSucceeded = fleetEnergyRuntime.stop();
-  const streamAgentClosedGracefully = await closeLlmStreamAgent();
+  const [streamAgentClosedGracefully] = await Promise.all([closeLlmStreamAgent(), mqttStopped]);
   if (!streamAgentClosedGracefully) {
     console.warn("[sparkDash] LLM dispatcher close timed out; destroyed open sockets");
   }

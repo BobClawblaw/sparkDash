@@ -39,6 +39,10 @@ const SETTINGS: Settings = {
   showVramBreakdown: true,
   prometheusExport: false,
   intelVramSudo: false,
+  mqttEnabled: false,
+  mqttUrl: "",
+  mqttUsername: "",
+  mqttTopicPrefix: "sparkdash",
 };
 
 const READY: GpuClockStatus = {
