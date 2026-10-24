@@ -567,6 +567,12 @@ export function unitMetricJson(entry) {
       llm.push(e);
       return;
     }
+    // Reachable but unmeasured (its stats could not be read): flag it and publish no rates or counters.
+    if (ll.measurementValid === false) {
+      e.measurement_valid = 0;
+      llm.push(e);
+      return;
+    }
     if (finite(ll.generationTps)) e.generation_tokens_per_second = ll.generationTps;
     if (finite(ll.prefillTps)) e.prefill_tokens_per_second = ll.prefillTps;
     if (finite(ll.kvCacheUsage)) e.kv_cache_usage_ratio = ll.kvCacheUsage;

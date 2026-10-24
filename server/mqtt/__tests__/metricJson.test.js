@@ -154,6 +154,17 @@ test("provenance and availability flags gate what is emitted", () => {
   assert.equal(j.gpu[0].power_watts, 18.4);
 });
 
+test("an endpoint that answered but whose stats were unreadable publishes no rates or counters", () => {
+  const snap = fullSnapshot();
+  snap.metrics.llm[0].measurementValid = false;
+  const j = unitMetricJson({ snapshot: snap, collected: {}, collectedAt: {} });
+  assert.equal(j.llm[0].up, 1);
+  assert.equal(j.llm[0].measurement_valid, 0);
+  for (const key of ["generation_tokens_per_second", "prefill_tokens_per_second", "requests_running", "generated_tokens_total", "prompt_tokens_total"]) {
+    assert.equal(j.llm[0][key], undefined, key);
+  }
+});
+
 test("the llm zero-output rule and an unavailable endpoint are honored", () => {
   const snap = fullSnapshot();
   snap.metrics.llm[0].totalOutputTokens = 0;
