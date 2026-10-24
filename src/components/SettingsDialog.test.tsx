@@ -43,6 +43,7 @@ const SETTINGS: Settings = {
   mqttUrl: "",
   mqttUsername: "",
   mqttTopicPrefix: "sparkdash",
+  occupancyMaxAgeMs: 12 * 60 * 60 * 1000,
 };
 
 const READY: GpuClockStatus = {

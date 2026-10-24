@@ -92,10 +92,18 @@ const DEFAULTS = Object.freeze({
   mqttUsername: "",
   /** Topic root for everything published (no wildcards, no slashes at the edges). */
   mqttTopicPrefix: "sparkdash",
+  /**
+   * Hide harness sessions older than this. Finite: 1 minute through 14 days.
+   * A missing or out-of-range value becomes 12 hours. There is no unlimited value.
+   */
+  occupancyMaxAgeMs: 12 * 60 * 60 * 1000,
 });
 
 const POLL_INTERVAL_MIN_MS = 500;
 const POLL_INTERVAL_MAX_MS = 60_000;
+export const OCCUPANCY_AGE_MIN_MS = 60 * 1000;
+export const OCCUPANCY_AGE_MAX_MS = 14 * 24 * 60 * 60 * 1000;
+export const OCCUPANCY_AGE_DEFAULT_MS = 12 * 60 * 60 * 1000;
 
 /** "" (follow the browser) or an IANA zone name this runtime knows. */
 export function isValidTimeZone(value) {
@@ -213,6 +221,11 @@ function _clampSettings(settings) {
   // Trailing slashes are normal while typing; strip them instead of rejecting.
   const prefix = typeof s.mqttTopicPrefix === "string" ? s.mqttTopicPrefix.trim().replace(/\/+$/, "") : "";
   s.mqttTopicPrefix = isValidMqttPrefix(prefix) ? prefix : DEFAULTS.mqttTopicPrefix;
+  const age = Number(s.occupancyMaxAgeMs);
+  s.occupancyMaxAgeMs =
+    Number.isFinite(age) && age >= OCCUPANCY_AGE_MIN_MS && age <= OCCUPANCY_AGE_MAX_MS
+      ? Math.round(age)
+      : OCCUPANCY_AGE_DEFAULT_MS;
   // Ensure temperatureUnit is valid
   if (s.temperatureUnit !== "celsius" && s.temperatureUnit !== "fahrenheit") {
     s.temperatureUnit = DEFAULTS.temperatureUnit;

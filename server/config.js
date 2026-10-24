@@ -33,6 +33,9 @@ const METRICS_HISTORY_JSON_PATH =
 /** Alert rule switches, channel settings (no URLs — those are in the secrets store) and the firing set; mode 0600. */
 const ALERTS_JSON_PATH =
   process.env.ALERTS_JSON_PATH || path.join(ROOT, "config", "alerts.json");
+/** Harness helper attaches (URLs and routes; bearer tokens stay in the secrets store). */
+const OCCUPANCY_HELPERS_JSON_PATH =
+  process.env.OCCUPANCY_HELPERS_JSON_PATH || path.join(ROOT, "config", "occupancy-helpers.json");
 /** Last good hosted-model price catalog (Cost compare page offline fallback). */
 const MODEL_PRICES_JSON_PATH =
   process.env.MODEL_PRICES_JSON_PATH || path.join(ROOT, "config", "model-prices.json");
@@ -219,6 +222,7 @@ export {
   FLEET_ENERGY_MONTHLY_JSON_PATH,
   METRICS_HISTORY_JSON_PATH,
   ALERTS_JSON_PATH,
+  OCCUPANCY_HELPERS_JSON_PATH,
   MODEL_PRICES_JSON_PATH,
   MODEL_PRICES_FETCH,
   LLM_PROBE_TIMEOUT_MS,
