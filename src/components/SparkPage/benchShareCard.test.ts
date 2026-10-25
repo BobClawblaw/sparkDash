@@ -153,6 +153,14 @@ function fakeContext(
 }
 
 describe("share card model", () => {
+  it("names the start context in the decode meta line only when one was set", () => {
+    const base = decodeJob();
+    const deep = decodeJob({ config: { ...base.config, contextTokens: 131072 } });
+    expect(buildDecodeShareCard(deep, { llmPort: 8888, modelId: "m", sparkName: "s" }).meta).toBe(
+      "Prose · 400 tok · temp 0 · thinking off · 128k start ctx · 1, 2 conc · 27.8 s"
+    );
+  });
+
   it("mirrors the decode table: sorted rows, aggregate + stream tok/s, TTFT and streams", () => {
     const job = decodeJob({ results: [decodeResult({ concurrency: 2, streamsOk: 1, streamsFailed: 1, aggregateDecodeTps: 56.83, meanDecodeTps: 28.6, meanTtftMs: 399 })] });
     const card = buildDecodeShareCard(job, { llmPort: 8888, modelId: "DeepSeek-v4.1-Flash-EXL3", sparkName: "spark-38bd" }, Date.UTC(2026, 8, 17));

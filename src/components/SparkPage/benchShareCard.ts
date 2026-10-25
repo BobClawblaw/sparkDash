@@ -299,7 +299,9 @@ export function buildDecodeShareCard(
     subtitle: shareCardSubtitle(src),
     chips: shareCardChips(src),
     status: shareCardStatus(job.status),
-    meta: `${decodeBenchTypeLabel(job.config?.promptType)} · ${job.config?.maxTokens ?? "?"} tok · ${decodeBenchSamplingLabel(job.config)} · ${
+    meta: `${decodeBenchTypeLabel(job.config?.promptType)} · ${job.config?.maxTokens ?? "?"} tok · ${decodeBenchSamplingLabel(job.config)}${
+      job.config?.contextTokens ? ` · ${formatContextSize(job.config.contextTokens)} start ctx` : ""
+    } · ${
       concurrencies.length ? `${concurrencies.join(", ")} conc` : "—"
     }${job.durationMs != null ? ` · ${formatDuration(job.durationMs)}` : ""}`,
     columns: { load: "Load", primary: "Aggregate", secondary: "Stream" },
