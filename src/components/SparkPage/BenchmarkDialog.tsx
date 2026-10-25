@@ -161,6 +161,16 @@ function ResultRow({ r, max }: { r: DecodeBenchJob["results"][number]; max: numb
       <div className="bench-result-row__load">
         <span className="bench-result-row__badge">×{r.concurrency}</span>
         <div className="bench-result-row__facts">
+          {r.contextTokens ? (
+            <>
+              <span className={r.warning ? "text-warning" : undefined}>
+                ctx <strong>{formatContextSize(r.contextTokens)}</strong>
+              </span>
+              <span className="bench-result-row__sep" aria-hidden>
+                ·
+              </span>
+            </>
+          ) : null}
           <span>
             TTFT <strong>{formatTtft(r.meanTtftMs)}</strong>
           </span>

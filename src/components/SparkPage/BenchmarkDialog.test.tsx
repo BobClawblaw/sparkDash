@@ -137,6 +137,20 @@ describe("decode served-model selection", () => {
 });
 
 describe("decode start context", () => {
+  it("shows the start context in the results header and on each level", async () => {
+    const deep = job("alpha");
+    deep.config.contextTokens = 131072;
+    deep.results[0].contextTokens = 131072;
+    deep.results[0].warning = "1 of 1 streams re-prefilled";
+    vi.mocked(listDecodeBench).mockResolvedValue({ active: null, last: deep, history: [] } as unknown as Awaited<ReturnType<typeof listDecodeBench>>);
+    render(<BenchmarkDialog {...props} />);
+    await flush();
+    const text = document.body.textContent ?? "";
+    expect(text).toContain("128k ctx");
+    expect(document.querySelector(".bench-result-row__facts")?.textContent).toContain("ctx 128k");
+    expect(text).toContain("re-prefilled");
+  });
+
   it("starts empty by default", async () => {
     render(<BenchmarkDialog {...props} />);
     await flush();

@@ -28,6 +28,19 @@ describe("history rows", () => {
     expect(row.model).toBe("qwen");
   });
 
+  it("decode names the start context only when one was set", () => {
+    const job = (contextTokens?: number) =>
+      ({
+        benchId: "d3",
+        startedAt: 1,
+        status: "completed",
+        config: { concurrencies: [4], modelId: "qwen", ...(contextTokens ? { contextTokens } : {}) },
+        results: [level(4, 90, 25)],
+      }) as unknown as DecodeBenchJob;
+    expect(decodeHistoryRow(job(131072)).detail).toBe("peak at ×4 · temp 0 · thinking off · 128k start ctx");
+    expect(decodeHistoryRow(job()).detail).not.toContain("start ctx");
+  });
+
   it("decode shows a dash when nothing decoded", () => {
     const job = {
       benchId: "d2",

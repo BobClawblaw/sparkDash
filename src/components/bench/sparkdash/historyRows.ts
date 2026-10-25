@@ -41,6 +41,7 @@ export function decodeHistoryRow(job: DecodeBenchJob): HistoryRow {
       best ? `peak at ×${best.concurrency}` : null,
       single ? `${single.meanDecodeTps.toFixed(1)}/stream at ×1` : null,
       decodeBenchSamplingLabel(job.config),
+      job.config.contextTokens ? `${formatContextSize(job.config.contextTokens)} start ctx` : null,
     ]
       .filter(Boolean)
       .join(" · "),
