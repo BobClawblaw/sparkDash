@@ -135,3 +135,34 @@ describe("decode served-model selection", () => {
     expect(buildDecodeShareCard).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ modelId: expected }));
   });
 });
+
+describe("decode start context", () => {
+  it("starts empty by default", async () => {
+    render(<BenchmarkDialog {...props} />);
+    await flush();
+    await click("Run benchmark");
+    expect(vi.mocked(startDecodeBench).mock.calls[0][1]).not.toHaveProperty("contextTokens");
+  });
+
+  it("sends contextTokens when a preset is picked", async () => {
+    render(<BenchmarkDialog {...props} />);
+    await flush();
+    await click("128k");
+    await click("Run benchmark");
+    expect(startDecodeBench).toHaveBeenCalledWith("spark-a", expect.objectContaining({ contextTokens: 131072 }));
+  });
+
+  it("refuses a context outside the supported range without starting", async () => {
+    render(<BenchmarkDialog {...props} />);
+    await flush();
+    const input = document.getElementById("bench-start-context") as HTMLInputElement;
+    const set = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!;
+    await act(async () => {
+      set.call(input, "100");
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await click("Run benchmark");
+    expect(startDecodeBench).not.toHaveBeenCalled();
+    expect(document.body.textContent).toContain("Start context must be");
+  });
+});

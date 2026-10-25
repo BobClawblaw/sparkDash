@@ -277,6 +277,22 @@ export function validateDecodeBudget(concurrencies, maxTokens, limit = DECODE_BE
   return work;
 }
 
+export const DECODE_CONTEXT_WORK_LIMIT = 4_000_000;
+
+/** Deep-context decode prefills every stream of every level, so cap the total prompt tokens. */
+export function validateDecodeContextBudget(concurrencies, contextTokens, limit = DECODE_CONTEXT_WORK_LIMIT) {
+  const work = (Array.isArray(concurrencies) ? concurrencies : []).reduce(
+    (total, value) => total + Number(value || 0) * Number(contextTokens || 0),
+    0
+  );
+  if (!Number.isFinite(work) || work < 0 || work > limit) {
+    const err = new Error(`Deep-context decode exceeds the ${limit}-token prefill budget`);
+    err.status = 429;
+    throw err;
+  }
+  return work;
+}
+
 export function validatePrefillBudget(contextSizes, limit = 600_000) {
   const work = (Array.isArray(contextSizes) ? contextSizes : []).reduce(
     (total, value) => total + Number(value || 0),

@@ -16,6 +16,7 @@ import {
   createRateLimiter,
   assertAllowedTarget,
   validateDecodeBudget,
+  validateDecodeContextBudget,
   validatePrefillBudget,
 } from "./validate.js";
 import { authStatus, authorizeUpgrade, createAuthMiddleware, createHostGuardMiddleware, isLoopbackBind, setTailscaleName } from "./auth.js";
@@ -23,6 +24,8 @@ import { inspectHealth } from "./health.js";
 import { getSettings, updateSettings, loadSettings } from "./settings.js";
 import { MqttPublisher } from "./mqtt/MqttPublisher.js";
 import { createOccupancyRuntime } from "./occupancy/runtime.js";
+import { formatContextSize, parseContextSize } from "../src/shared/prefillBench.js";
+import { PREFILL_RESERVE_TOKENS, sizeFitsContext } from "../src/shared/contextFit.js";
 import { broadcastForLanIp, effectiveMac, normalizeMac, sendWol } from "./wol.js";
 import { remoteShutdownCommand, spawnLocalShutdown } from "./shutdown.js";
 import { GpuClockManager } from "./gpuclock/GpuClockManager.js";
@@ -1420,7 +1423,8 @@ app.post("/api/sparks/:id/llm/bench", async (req, res) => {
 
   // Resolve model id for this port from live snapshot when possible
   let modelId = req.body?.modelId || null;
-  if (!modelId && !target.custom && monitor) {
+  let contextLength = null;
+  if (!target.custom && monitor) {
     const snap = monitor.snapshot();
     const llmList = Array.isArray(snap?.metrics?.llm) ? snap.metrics.llm : [];
     const portIndex = ports.indexOf(port);
@@ -1428,7 +1432,24 @@ app.post("/api/sparks/:id/llm/bench", async (req, res) => {
       (portIndex >= 0 ? llmList[portIndex] : null) ||
       llmList.find((m) => m?.available) ||
       llmList[0];
-    modelId = llm?.modelId || null;
+    if (!modelId) modelId = llm?.modelId || null;
+    contextLength = Number(llm?.contextLength) > 0 ? Number(llm.contextLength) : null;
+  }
+
+  // Deep-context start: every stream carries `contextTokens` of prompt before it decodes.
+  const contextTokens = parseContextSize(req.body?.contextTokens) || 0;
+  if (contextTokens > 0) {
+    try {
+      validateDecodeContextBudget(normalizeConcurrencies(req.body?.concurrencies), contextTokens);
+    } catch (err) {
+      return res.status(err.status || 429).json({ error: err.message });
+    }
+    const maxTokens = Number(req.body?.maxTokens ?? 400);
+    if (!sizeFitsContext(contextTokens, contextLength, PREFILL_RESERVE_TOKENS + maxTokens, 1)) {
+      return res.status(400).json({
+        error: `${formatContextSize(contextTokens)} of context plus ${maxTokens} reply tokens does not fit the model context (${contextLength.toLocaleString()} tokens)`,
+      });
+    }
   }
 
   try {
@@ -1444,6 +1465,7 @@ app.post("/api/sparks/:id/llm/bench", async (req, res) => {
       promptType: req.body?.promptType,
       temperature: req.body?.temperature,
       thinking: req.body?.thinking,
+      contextTokens: req.body?.contextTokens,
       debug: benchDebug,
       apiKey: target.apiKey,
       host: target.host,

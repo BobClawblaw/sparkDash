@@ -21,6 +21,12 @@ import { LiveTps } from "../bench/sparkdash/LiveTps";
 import { formatDuration } from "../../shared/formatDuration";
 import { formatLlmBaseUrl } from "../../shared/llmTarget.js";
 import {
+  PREFILL_MAX_CONTEXT_SIZE,
+  PREFILL_MIN_CONTEXT_SIZE,
+  formatContextSize,
+  parseContextSize,
+} from "../../shared/prefillBench.js";
+import {
   DECODE_BENCH_DEFAULT_TYPE,
   DECODE_BENCH_TYPE_META,
   decodeBenchTypeLabel,
@@ -33,6 +39,22 @@ const DEFAULT_MAX_TOKENS = 400;
 const DEFAULT_TEMPERATURE = 0.7;
 const DEFAULT_THINKING = true;
 const DEFAULT_PROMPT_TYPE: DecodeBenchPromptType = DECODE_BENCH_DEFAULT_TYPE;
+/** Start-context presets (tokens); 0 starts empty. A custom size can be typed too. */
+const CONTEXT_PRESETS = [0, 16384, 32768, 65536, 131072, 262144] as const;
+
+/** "128k", "131072" → tokens; "" → 0 (empty context); anything else → null. */
+function parseContextDraft(raw: string): number | null {
+  const t = raw.trim().toLowerCase();
+  if (t === "") return 0;
+  const m = /^(\d+)(k?)$/.exec(t);
+  if (!m) return null;
+  const n = parseInt(m[1], 10) * (m[2] ? 1024 : 1);
+  return n === 0 ? 0 : parseContextSize(n);
+}
+
+function contextLabel(tokens: number | undefined): string {
+  return tokens && tokens > 0 ? ` · ${formatContextSize(tokens)} ctx` : "";
+}
 
 interface BenchmarkDialogProps {
   /** Modal only; the page variant is always open. */
@@ -111,7 +133,8 @@ function formatTtft(ms: number): string {
 function buildShareText(job: DecodeBenchJob, modelId: string | null): string {
   const name = modelId || "unknown model";
   const typeLabel = decodeBenchTypeLabel(job.config?.promptType);
-  const head = `${name} | decode tok/s results (${typeLabel}, ${decodeBenchSamplingLabel(job.config)}):`;
+  const ctx = job.config?.contextTokens ? `, starting at ${formatContextSize(job.config.contextTokens)} context` : "";
+  const head = `${name} | decode tok/s results (${typeLabel}, ${decodeBenchSamplingLabel(job.config)}${ctx}):`;
 
   const lines = job.results
     .slice()
@@ -173,6 +196,7 @@ function ResultRow({ r, max }: { r: DecodeBenchJob["results"][number]; max: numb
       <div className="bench-result-row__bar" aria-hidden>
         <i style={{ width: `${pct}%` }} />
       </div>
+      {r.warning && <p className="bench-sheet__hint text-warning">{r.warning}</p>}
     </article>
   );
 }
@@ -201,6 +225,7 @@ export function BenchmarkDialog({
   const [promptType, setPromptType] = useState<DecodeBenchPromptType>(DEFAULT_PROMPT_TYPE);
   const [temperatureDraft, setTemperatureDraft] = useState(String(DEFAULT_TEMPERATURE));
   const [thinking, setThinking] = useState(DEFAULT_THINKING);
+  const [contextDraft, setContextDraft] = useState("");
   const [job, setJob] = useState<DecodeBenchJob | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [starting, setStarting] = useState(false);
@@ -267,6 +292,7 @@ export function BenchmarkDialog({
     if (j.config?.maxTokens != null) {
       setMaxTokensDraft(String(j.config.maxTokens));
     }
+    setContextDraft(j.config?.contextTokens ? String(j.config.contextTokens) : "");
     // Last-run type is shown on results; the picker always defaults to Structured
     // for the next Run. Only a still-running job pins the picker.
     if (j.status === "running" && j.config?.promptType) {
@@ -437,6 +463,13 @@ export function BenchmarkDialog({
       setError("Temperature must be a number between 0 and 2");
       return;
     }
+    const contextTokens = parseContextDraft(contextDraft);
+    if (contextTokens == null) {
+      setError(
+        `Start context must be ${PREFILL_MIN_CONTEXT_SIZE} to ${PREFILL_MAX_CONTEXT_SIZE.toLocaleString()} tokens (e.g. 131072 or 128k), or empty`
+      );
+      return;
+    }
     startLockRef.current = true;
     setStarting(true);
     setError(null);
@@ -450,6 +483,7 @@ export function BenchmarkDialog({
         promptType,
         temperature,
         thinking,
+        ...(contextTokens > 0 ? { contextTokens } : {}),
         ...(remoteTarget
           ? { host: remoteTarget.host, tls: remoteTarget.tls }
           : {}),
@@ -656,6 +690,50 @@ export function BenchmarkDialog({
 
               <div className="bench-field">
                 <div className="bench-field__head">
+                  <label htmlFor="bench-start-context" className="bench-sheet__section-title">
+                    Start context / stream
+                  </label>
+                  <p className="bench-sheet__hint">
+                    Each stream is prefilled to this many tokens first, then decodes from there. Needs prefix caching
+                    and KV room for concurrency × context.
+                  </p>
+                </div>
+                <div className="bench-conc-grid" role="group" aria-label="Start context presets">
+                  {CONTEXT_PRESETS.map((n) => {
+                    const on = (parseContextDraft(contextDraft) ?? -1) === n;
+                    return (
+                      <button
+                        key={n}
+                        type="button"
+                        disabled={isRunning || starting}
+                        onClick={() => setContextDraft(n === 0 ? "" : String(n))}
+                        className={`bench-conc-btn${on ? " is-on" : ""}`}
+                      >
+                        {n === 0 ? "Empty" : formatContextSize(n)}
+                      </button>
+                    );
+                  })}
+                </div>
+                <div className="bench-custom-size">
+                  <input
+                    id="bench-start-context"
+                    type="text"
+                    inputMode="text"
+                    placeholder="Custom, e.g. 100k"
+                    disabled={isRunning || starting}
+                    value={contextDraft}
+                    onChange={(e) => {
+                      const raw = e.target.value;
+                      if (/^\d*k?$/i.test(raw)) setContextDraft(raw);
+                    }}
+                    className="bench-input"
+                    size={14}
+                  />
+                </div>
+              </div>
+
+              <div className="bench-field">
+                <div className="bench-field__head">
                   <label htmlFor="bench-max-tokens" className="bench-sheet__section-title">
                     Max tokens / stream
                   </label>
@@ -698,6 +776,7 @@ export function BenchmarkDialog({
                     {job.progress.currentConcurrency != null
                       ? ` · ×${job.progress.currentConcurrency}`
                       : ""}
+                    {contextLabel(job.config?.contextTokens)}
                   </span>
                   <span className="bench-progress__meta">
                     {job.progress.completedLevels}/{job.progress.totalLevels}
@@ -740,7 +819,8 @@ export function BenchmarkDialog({
                 </span>
                 <span className="bench-status-meta">
                   {decodeBenchTypeLabel(job.config.promptType)} · {job.config.maxTokens} tok ·{" "}
-                  {decodeBenchSamplingLabel(job.config)} ·{" "}
+                  {decodeBenchSamplingLabel(job.config)}
+                  {contextLabel(job.config.contextTokens)} ·{" "}
                   {job.config.concurrencies.join(", ")} conc
                   {job.durationMs != null ? ` · ${formatDuration(job.durationMs)}` : ""}
                 </span>
