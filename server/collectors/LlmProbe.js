@@ -17,6 +17,18 @@ const TUNNEL_DROP_AFTER_FAILURES = 5;
 const TUNNEL_RETRY_MIN_MS = 60_000;
 const TUNNEL_RETRY_MAX_MS = 15 * 60_000;
 const REDETECT_INTERVAL_MS = 60_000;
+/**
+ * TensorFold's cached-prompt counter, by precedence. Upstream
+ * (ashhart/TensorFold) publishes `prompt_tokens_cached_total`; a build whose
+ * prompt-cache tier comes from a recipe patch rather than upstream publishes
+ * `prompt_cache_cached_tokens` instead; older builds only carry vLLM's
+ * prefix-cache hits. All three are token-granular lifetime counters.
+ */
+const TENSORFOLD_CACHED_PROMPT_COUNTERS = [
+  "prompt_tokens_cached_total",
+  "prompt_cache_cached_tokens",
+  "prefix_cache_hits_total",
+];
 /** owned_by values that are exactly an engine's own name (each is also its backend type). */
 const OWNED_BY_ENGINES = new Set(["locals", "splash", "tensorfold", "ds4", "sglang", "exl3", "q27", "freetoken", "radiance"]);
 /** Current SGLang names first. Deprecated aliases still work but log a warning per hit. */
@@ -2002,19 +2014,20 @@ export class LlmProbe {
     const prompt = queueOnly ? null : m("prompt_tokens_total");
     if (Number.isFinite(gen) && gen >= 0) this.totalOutputTokens = gen;
     if (Number.isFinite(prompt) && prompt >= 0) this.totalPromptTokens = prompt;
-    // TensorFold publishes the prompt-cache split of finished requests, either under
-    // its own name or as vLLM's prefix-cache hits. Keep it from this scrape's prompt
-    // total and never let a cached count exceed the prompt it belongs to. Builds that
-    // publish neither leave the previous value alone.
-    const cached = queueOnly ? null : m("prompt_tokens_cached_total");
-    const cachedFallback =
-      queueOnly || (Number.isFinite(cached) && cached >= 0) ? null : m("prefix_cache_hits_total");
-    const cachedTotal =
-      Number.isFinite(cached) && cached >= 0
-        ? cached
-        : Number.isFinite(cachedFallback) && cachedFallback >= 0
-          ? cachedFallback
-          : null;
+    // TensorFold publishes the prompt-cache split of finished requests under one of
+    // several names (TENSORFOLD_CACHED_PROMPT_COUNTERS, in precedence order). Keep it
+    // from this scrape's prompt total and never let a cached count exceed the prompt it
+    // belongs to. Builds that publish none of them leave the previous value alone.
+    let cachedTotal = null;
+    if (!queueOnly) {
+      for (const name of TENSORFOLD_CACHED_PROMPT_COUNTERS) {
+        const value = m(name);
+        if (Number.isFinite(value) && value >= 0) {
+          cachedTotal = value;
+          break;
+        }
+      }
+    }
     if (cachedTotal != null) {
       this.totalCachedTokens =
         Number.isFinite(prompt) && prompt >= 0 ? Math.min(cachedTotal, prompt) : cachedTotal;
