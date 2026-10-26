@@ -17,6 +17,8 @@ const TUNNEL_DROP_AFTER_FAILURES = 5;
 const TUNNEL_RETRY_MIN_MS = 60_000;
 const TUNNEL_RETRY_MAX_MS = 15 * 60_000;
 const REDETECT_INTERVAL_MS = 60_000;
+/** owned_by values that are exactly an engine's own name (each is also its backend type). */
+const OWNED_BY_ENGINES = new Set(["locals", "splash", "tensorfold", "ds4", "sglang", "exl3", "q27", "freetoken", "radiance"]);
 /** Current SGLang names first. Deprecated aliases still work but log a warning per hit. */
 const SGLANG_SERVER_INFO_PATHS = ["/server_info", "/get_server_info"];
 const SGLANG_MODEL_INFO_PATHS = ["/model_info", "/get_model_info"];
@@ -622,13 +624,19 @@ export class LlmProbe {
    * @returns {Promise<"lmstudio" | "ollama" | "ds4" | "sglang" | "exl3" | "q27" | "tensorfold" | "freetoken" | "radiance" | "flare" | "vllm">}
    */
   async _classifyOpenAIBackend(ownedBy, flareCard = false) {
+    // An owned_by that is exactly an engine's own name is classified from the card alone: detection
+    // re-runs every minute, and probing LM Studio's or Ollama's paths on it logs a 404 each time.
+    // Substrings stay behind the probes below (Ollama's owned_by is a model namespace).
+    if (typeof ownedBy === "string" && OWNED_BY_ENGINES.has(ownedBy.toLowerCase())) {
+      return /** @type {any} */ (ownedBy.toLowerCase());
+    }
     // LM Studio first: it answers 200 + JSON on every path, so the heuristic
     // probes below (notably SGLang's /server_info) would misfire on it.
     if (await this._probeIsLmStudio()) return "lmstudio";
-    // Locals (Generated-Computers/Locals) reports owned_by: "locals" and also answers Ollama's /api/tags,
-    // so it has to be recognised before the Ollama probe claims it.
-    if (typeof ownedBy === "string" && /^locals$/i.test(ownedBy)) return "locals";
-    // Ollama second: its native /api/tags contract is unique among engines.
+    // Ollama second: its native /api/tags contract is unique among engines. Locals
+    // (Generated-Computers/Locals) also answers /api/tags, so it must not reach this
+    // probe; its exact `owned_by: "locals"` is in OWNED_BY_ENGINES above.
+    if (await this._probeIsOllama()) return "ollama";
     if (await this._probeIsOllama()) return "ollama";
     if (flareCard) return "flare";
     if (typeof ownedBy === "string") {
