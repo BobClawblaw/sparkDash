@@ -1171,7 +1171,11 @@ export class LlmProbe {
             } else if (this.backendType == null || this.backendType === "vllm") {
               this.backendType = "vllm";
               this._applyVllmMetrics(txt, dtSec);
-              this._applyMlxServeLiveRates(txt, dtSec);
+              // Only mlx-serve publishes these live gauges; a plain vLLM (or a
+              // compatibility proxy) must keep the stock counter rates.
+              if (LlmProbe._metricsLookLikeMlxServe(txt)) {
+                this._applyMlxServeLiveRates(txt, dtSec);
+              }
             }
           }
         } else if (this.backendType === "splash") {
