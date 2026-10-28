@@ -19,6 +19,7 @@ import { HermesUpdateDialog } from "./components/SparkPage/HermesUpdateDialog";
 import { OverviewPage } from "./components/OverviewPage/OverviewPage";
 import { ShowcasePage } from "./components/ShowcasePage/ShowcasePage";
 import { ShowcaseView } from "./components/ShowcasePage/ShowcaseView";
+import { KioskPage } from "./components/KioskPage/KioskPage";
 import { ThemeSwitch } from "./components/ThemeSwitch";
 import { SettingsDialog } from "./components/SettingsDialog";
 import { HarnessWizard } from "./components/HarnessWizard";
@@ -38,6 +39,7 @@ import {
   ThermometerIcon,
   BotIcon,
   CoinsIcon,
+  ExpandIcon,
 } from "./components/ui/icons";
 import { ConnectionBanner } from "./components/ui/ConnectionBanner";
 import { ErrorBanner } from "./components/ui/ErrorBanner";
@@ -475,6 +477,7 @@ function DashboardApp() {
       { id: "nav:temps", group: "Go to", label: "Temps", hint: "Page", icon: <ThermometerIcon className="h-4 w-4" />, keywords: "gpu temperature thermal temps heat cooling", run: () => navigate(TEMPS_ID) },
       { id: "nav:showcase", group: "Go to", label: "Showcase", hint: "Page", icon: <TerminalIcon className="h-4 w-4" />, keywords: "prompts terminals stream demo", run: () => navigate(SHOWCASE_ID) },
       { id: "nav:activity", group: "Go to", label: "Activity", hint: "Page", icon: <ListIcon className="h-4 w-4" />, keywords: "events log history recent", run: () => navigate(ACTIVITY_ID) },
+      { id: "nav:kiosk", group: "Go to", label: "Kiosk", hint: "Wall display", icon: <ExpandIcon className="h-4 w-4" />, keywords: "wall tv display fullscreen full screen", run: () => window.location.assign("/kiosk") },
     );
     for (const s of displaySparks) {
       cmds.push({
@@ -708,6 +711,8 @@ function App() {
     <>
       {route.mode === "showcase" && route.showcaseSparkId ? (
         <ShowcasePage sparkId={route.showcaseSparkId} />
+      ) : route.mode === "kiosk" ? (
+        <KioskPage />
       ) : (
         <DashboardApp />
       )}
