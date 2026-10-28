@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import { strict as assert } from "node:assert";
 import { execFileSync } from "node:child_process";
-import { SystemCollector, MACMON_CMD, parseMacmonSample, parseMacNetwork, MAC_NETWORK_CMD } from "../SystemCollector.js";
+import { SystemCollector, MACMON_CMD, parseMacmonSample, parseMacGpuMemory, parseMacNetwork, MAC_NETWORK_CMD } from "../SystemCollector.js";
 import { DARWIN_UPTIME_CMD } from "../../sparks/SparkMonitor.js";
 
 // `macmon pipe -s 1` output captured from a Mac Studio (M3 Ultra, 512 GB, macOS 27), core lists trimmed.
@@ -43,6 +43,41 @@ test("macOS GPU/CPU/RAM come from one macmon sample", async () => {
   assert.equal(ram.used, Math.round(198868484096 / 1048576));
   assert.equal(um.total, 524288);
   assert.equal(um.gpuUsed, 0);
+});
+
+// ioreg's line for the GPU driver's share of unified memory, as MACMON_CMD prints it before macmon's JSON.
+const IOREG_GPU = '"In use system memory"=76662177792';
+
+test("parseMacGpuMemory sums the accelerators' in-use memory and is null without any", () => {
+  assert.equal(parseMacGpuMemory(`${IOREG_GPU}\n${SAMPLE}`), 76662177792);
+  assert.equal(parseMacGpuMemory(`"In use system memory"=1000\n"In use system memory"=24\n${SAMPLE}`), 1024);
+  assert.equal(parseMacGpuMemory(SAMPLE), null);
+  assert.equal(parseMacGpuMemory('"In use system memory (driver)"=5\n"Alloc system memory"=9'), null);
+  assert.equal(parseMacGpuMemory(""), null);
+});
+
+test("macOS splits unified memory into the GPU's share and the rest, from the same SSH call", async () => {
+  const c = mac();
+  const calls = withSample(c, `${IOREG_GPU}\n${SAMPLE}`);
+  const [gpu, ram, um] = await Promise.all([c.collectGpu(), c.collectRam(), c.collectUnifiedMemory()]);
+  assert.equal(calls(), 1, "ioreg rides along with macmon: still one SSH round trip");
+  const gpuMB = Math.round(76662177792 / 1048576);
+  assert.equal(gpu.vram.used, gpuMB);
+  assert.equal(gpu.vram.total, 524288);
+  assert.equal(gpu.vram.available, 524288 - ram.used, "headroom is what the whole system has free");
+  assert.equal(um.gpuUsed, gpuMB);
+  assert.equal(um.cpuUsed, ram.used - gpuMB);
+  assert.equal(um.used, ram.used);
+  assert.equal(um.available, 524288 - ram.used);
+});
+
+test("macOS without ioreg's figure keeps reporting the pool as a whole", async () => {
+  const c = mac();
+  withSample(c);
+  const [gpu, ram, um] = await Promise.all([c.collectGpu(), c.collectRam(), c.collectUnifiedMemory()]);
+  assert.equal(gpu.vram.used, ram.used);
+  assert.equal(um.gpuUsed, 0);
+  assert.equal(um.cpuUsed, ram.used);
 });
 
 test("macOS without macmon degrades to defaults; RAM falls back to sysctl", async () => {
@@ -106,6 +141,7 @@ test("MACMON_CMD and DARWIN_UPTIME_CMD are valid POSIX sh", () => {
   assert.match(MACMON_CMD, /opt\/homebrew\/bin\/macmon/);
   assert.match(MACMON_CMD, /HOME\/\.cargo\/bin\/macmon/);
   assert.match(MACMON_CMD, /--soc-info/);
+  assert.match(MACMON_CMD, /ioreg -r -d 1 -w 0 -c IOAccelerator/);
 });
 
 test("DARWIN_UPTIME_CMD parses kern.boottime", () => {
