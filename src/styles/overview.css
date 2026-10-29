@@ -766,6 +766,9 @@
   font-weight: 550;
   color: var(--color-text);
 }
+.ov .ov-sub .ov-sub__warn {
+  color: var(--color-warning);
+}
 
 /* "prefilling" placeholder: three dots rippling where the number would be */
 .ov-tps__dots {
