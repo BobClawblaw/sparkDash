@@ -1482,12 +1482,14 @@ export class SystemCollector {
     return lines
       .map((line) => {
         const parts = line.split(",").map((s) => s.trim());
-        // Format: pid,process_name,used_gpu_memory[,gpu_uuid]
-        const gpuUuid = parts[3] && /^GPU-/i.test(parts[3]) ? parts[3] : null;
+        // Format: pid,process_name,used_gpu_memory[,gpu_uuid]. The name may be a whole command line with
+        // commas of its own (--enable-features=A,B), so the other fields are read from both ends.
+        const gpuUuid = parts.length >= 4 && /^GPU-/i.test(parts[parts.length - 1]) ? parts[parts.length - 1] : null;
+        const memIndex = parts.length - (gpuUuid ? 2 : 1);
         return {
           pid: parseInt(parts[0]) || 0,
-          name: parts[1] || "unknown",
-          vramMB: this._parseSmiNumber(parts[2]) || 0,
+          name: parts.slice(1, Math.max(memIndex, 2)).join(",") || "unknown",
+          vramMB: memIndex >= 2 ? this._parseSmiNumber(parts[memIndex]) || 0 : 0,
           gpuUuid,
         };
       })

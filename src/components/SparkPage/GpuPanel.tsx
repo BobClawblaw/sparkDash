@@ -7,6 +7,7 @@ import { Tag, type TagTone } from "../ui/Tag";
 import { ActivityIcon } from "../ui/icons";
 import { MetricBar } from "../ui/MetricBar";
 import { VramBreakdownBar } from "../ui/VramBreakdownBar";
+import { shortProcessName } from "../../shared/processName";
 import { useMetricsHistoryTail } from "../../hooks/metricsStore";
 import { formatMb } from "../../shared/formatBytes";
 import { shortGpuName } from "../../shared/gpuName";
@@ -367,7 +368,7 @@ export function GpuProcessTable({
           <tr key={proc.pid}>
             <td className="mono">{proc.pid}</td>
             <td title={`${proc.name} (PID ${proc.pid})`}>
-              <span className="sp-table__name">{proc.name}</span>
+              <span className="sp-table__name">{shortProcessName(proc.name)}</span>
             </td>
             <td className="r mono">{formatMb(proc.vramMB)}</td>
           </tr>

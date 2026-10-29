@@ -5,6 +5,7 @@ import { usableHead } from "../../shared/sparkHead";
 import { wakeSpark } from "../../api/client";
 import { backendLabel } from "../../shared/llmBackends";
 import { formatDiskSize, formatMb } from "../../shared/formatBytes";
+import { shortProcessName } from "../../shared/processName";
 import { Tag } from "../ui/Tag";
 import { HealthChips, worstSeverity } from "../ui/HealthFindings";
 import { AppLink } from "../ui/AppLink";
@@ -190,7 +191,7 @@ function SparkCardImpl({
   const gpuHolders = (gpu?.processes ?? [])
     .filter((p) => p.vramMB > 0)
     .slice(0, 3)
-    .map((p) => `${p.name} (${formatMb(p.vramMB)})`);
+    .map((p) => `${shortProcessName(p.name)} (${formatMb(p.vramMB)})`);
   const loadingHint =
     !llm && (memUsed >= 2048 || usage >= 10)
       ? `${gpuHolders.length > 0 ? `In use by ${gpuHolders.join(", ")} · ` : ""}${formatMb(memUsed)} VRAM in use · GPU ${Math.round(usage)}%`
