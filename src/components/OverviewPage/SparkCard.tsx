@@ -1,11 +1,12 @@
 import { memo, useState } from "react";
-import type { SparkSnapshot } from "../../api/types";
+import type { GpuDevice, SparkSnapshot } from "../../api/types";
 import { resolveSparkRole } from "../../api/sparkRole";
 import { usableHead } from "../../shared/sparkHead";
 import { wakeSpark } from "../../api/client";
 import { backendLabel } from "../../shared/llmBackends";
 import { formatDiskSize, formatMb } from "../../shared/formatBytes";
 import { shortProcessName } from "../../shared/processName";
+import { shortGpuName } from "../../shared/gpuName";
 import { Tag } from "../ui/Tag";
 import { HealthChips, worstSeverity } from "../ui/HealthFindings";
 import { AppLink } from "../ui/AppLink";
@@ -65,6 +66,40 @@ function Bar({
   );
 }
 
+/** One card of a multi-GPU host: its VRAM and its usage, with its temperature in the usage caption. */
+function GpuCardBars({ card, fmtTemp }: { card: GpuDevice; fmtTemp: (c: number) => string }) {
+  const avail = card.metricAvailability;
+  const label = `GPU ${card.physicalIndex ?? card.index}`;
+  const title = shortGpuName(card.name) || undefined;
+  const vramKnown = avail?.vramUsed !== false && avail?.vramTotal !== false && card.vram.total > 0;
+  const vramPct = card.vram.percentage;
+  const hot = !!(card.throttle?.thermal || card.throttle?.hwSlowdown) || card.temperature >= 80;
+  const usageCaption = [
+    avail?.usage === false ? "—" : `${Math.round(card.usage)}%`,
+    avail?.temperature === false ? null : fmtTemp(card.temperature),
+  ]
+    .filter(Boolean)
+    .join(" · ");
+  return (
+    <>
+      <Bar
+        label={`${label} VRAM`}
+        title={title}
+        caption={vramKnown ? `${fmtStorage(card.vram.used, false)} / ${fmtStorage(card.vram.total, true)}` : "—"}
+        pct={vramKnown ? vramPct : 0}
+        color={vramPct >= 90 ? "var(--color-danger)" : vramPct >= 85 ? "var(--color-warning)" : "var(--color-info)"}
+      />
+      <Bar
+        label={label}
+        title={title}
+        caption={usageCaption}
+        pct={avail?.usage === false ? 0 : card.usage}
+        color={hot ? "var(--color-warning)" : "var(--color-accent)"}
+      />
+    </>
+  );
+}
+
 function SparkCardImpl({
   spark,
   headSpark,
@@ -120,6 +155,9 @@ function SparkCardImpl({
   const cpuPowerPct = cpuPower && cpuPower.tdp > 0 ? (cpuPower.draw / cpuPower.tdp) * 100 : 0;
   const power = gpu?.power;
   const powerPct = power && power.limit > 0 ? (power.draw / power.limit) * 100 : 0;
+  // A multi-card host gets a VRAM and a usage bar per card: the aggregate above is the busiest card's usage
+  // and the summed VRAM, which hides a model split unevenly across cards (or one card sitting idle).
+  const cards = gpu?.gpus && gpu.gpus.length > 1 ? gpu.gpus : null;
 
   const rootDisk =
     spark.metrics.storage.find((d) => d.label === "/") ?? spark.metrics.storage.find((d) => d.device === "nvme0n1p2");
@@ -296,11 +334,11 @@ function SparkCardImpl({
             <div className="ov-sc__stats">
               {breakdown ? (
                 <VramBreakdownBar
-                  label={breakdown.systemMB != null ? "Unified memory" : "VRAM"}
+                  label={breakdown.systemMB != null ? "Unified memory" : cards ? "VRAM total" : "VRAM"}
                   breakdown={breakdown}
                   showLegend
                 />
-              ) : (
+              ) : cards ? null : (
                 <Bar
                   label={gpu.vram?.total ? "VRAM" : "Unified memory"}
                   caption={vramAvailable && memTotal > 0 ? `${fmtStorage(memUsed, false)} / ${fmtStorage(memTotal, true)}` : "—"}
@@ -309,7 +347,11 @@ function SparkCardImpl({
                   sub={memTotal > 0 && memAvail > 0 ? { label: "Available", value: formatMb(memAvail) } : null}
                 />
               )}
-              <Bar label="GPU" caption={gpu.metricAvailability?.usage === false ? "—" : `${Math.round(usage)}%`} pct={gpu.metricAvailability?.usage === false ? 0 : usage} color={ringColor} />
+              {cards ? (
+                cards.map((card) => <GpuCardBars key={card.index} card={card} fmtTemp={fmtTemp} />)
+              ) : (
+                <Bar label="GPU" caption={gpu.metricAvailability?.usage === false ? "—" : `${Math.round(usage)}%`} pct={gpu.metricAvailability?.usage === false ? 0 : usage} color={ringColor} />
+              )}
               {spark.kind === "host" && spark.metrics.ram?.total ? (
                 <Bar
                   label="RAM"
@@ -318,9 +360,11 @@ function SparkCardImpl({
                   color="var(--color-info)"
                 />
               ) : null}
-              <Bar label="GPU temp" caption={gpu.metricAvailability?.temperature === false ? "—" : fmtTemp(tempRaw)} pct={gpu.metricAvailability?.temperature === false ? 0 : (tempVal / tempMax) * 100} color={tempColor} />
+              {cards ? null : (
+                <Bar label="GPU temp" caption={gpu.metricAvailability?.temperature === false ? "—" : fmtTemp(tempRaw)} pct={gpu.metricAvailability?.temperature === false ? 0 : (tempVal / tempMax) * 100} color={tempColor} />
+              )}
               <Bar
-                label="GPU power"
+                label={cards ? "GPU power total" : "GPU power"}
                 caption={gpu.metricAvailability?.powerDraw === false ? "—" : `${power?.draw ?? 0} / ${gpu.metricAvailability?.powerLimit === false ? "—" : power?.limit ?? 0} W`}
                 pct={gpu.metricAvailability?.powerDraw === false ? 0 : powerPct}
                 color="var(--color-violet)"
