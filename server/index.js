@@ -1425,6 +1425,7 @@ app.post("/api/sparks/:id/llm/bench", async (req, res) => {
 
   // Resolve model id for this port from live snapshot when possible
   let modelId = req.body?.modelId || null;
+  let backend = null;
   let contextLength = null;
   if (!target.custom && monitor) {
     const snap = monitor.snapshot();
@@ -1435,6 +1436,8 @@ app.post("/api/sparks/:id/llm/bench", async (req, res) => {
       llmList.find((m) => m?.available) ||
       llmList[0];
     if (!modelId) modelId = llm?.modelId || null;
+    // Never infer sampler compatibility from a model name or another port's engine.
+    if (portIndex >= 0) backend = llmList[portIndex]?.backend || null;
     contextLength = Number(llm?.contextLength) > 0 ? Number(llm.contextLength) : null;
   }
 
@@ -1462,6 +1465,7 @@ app.post("/api/sparks/:id/llm/bench", async (req, res) => {
       lanIp: llmProbeHost(spark),
       port,
       modelId,
+      backend,
       concurrencies: req.body?.concurrencies,
       maxTokens: req.body?.maxTokens,
       promptType: req.body?.promptType,
