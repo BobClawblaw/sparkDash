@@ -66,7 +66,7 @@ function Bar({
   );
 }
 
-/** One card of a multi-GPU host: a VRAM bar, with its load, temperature and power on the line under it. */
+/** One card of a multi-GPU host: its VRAM bar ("GPU 0 VRAM"), with its load, temperature and power on the line under it. */
 function GpuCardBar({ card, fmtTemp }: { card: GpuDevice; fmtTemp: (c: number) => string }) {
   const avail = card.metricAvailability;
   const vramKnown = avail?.vramUsed !== false && avail?.vramTotal !== false && card.vram.total > 0;
@@ -82,7 +82,7 @@ function GpuCardBar({ card, fmtTemp }: { card: GpuDevice; fmtTemp: (c: number) =
     avail?.powerDraw === false ? "—" : `${Math.round(card.power.draw)}${avail?.powerLimit === false ? "" : ` / ${Math.round(card.power.limit)}`} W`;
   return (
     <Bar
-      label={`GPU ${card.physicalIndex ?? card.index}`}
+      label={`GPU ${card.physicalIndex ?? card.index} VRAM`}
       title={shortGpuName(card.name) || undefined}
       caption={vramKnown ? `${fmtStorage(card.vram.used, false)} / ${fmtStorage(card.vram.total, true)}` : "—"}
       pct={vramKnown ? vramPct : 0}
