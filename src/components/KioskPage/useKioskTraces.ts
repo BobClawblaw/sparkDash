@@ -41,6 +41,25 @@ function tracesFromBrowser(spark: SparkSnapshot, now: number): KioskTraces {
  * traces it last had (the wall holds its last good frame); with history off on the server,
  * traces come from this browser's own samples.
  */
+/**
+ * The traces to hold after a refresh: this fetch's series for each unit that returned one, the
+ * unit's previous series where its own fetch failed (the wall keeps its last good frame), and
+ * nothing for a unit that is no longer in the fleet — otherwise a removed unit's series would
+ * stay in the map for the lifetime of a wall that is never reloaded.
+ */
+export function mergeTraces(
+  previous: Record<string, KioskTraces>,
+  fetched: Record<string, KioskTraces>,
+  ids: readonly string[]
+): Record<string, KioskTraces> {
+  const kept: Record<string, KioskTraces> = {};
+  for (const id of ids) {
+    const traces = fetched[id] ?? previous[id];
+    if (traces) kept[id] = traces;
+  }
+  return kept;
+}
+
 export function useKioskTraces(sparks: readonly SparkSnapshot[]): Record<string, KioskTraces> {
   const [traces, setTraces] = useState<Record<string, KioskTraces>>({});
   const ids = sparks.map((s) => s.id).join("\n");
@@ -60,7 +79,7 @@ export function useKioskTraces(sparks: readonly SparkSnapshot[]): Record<string,
           }
         })
       );
-      if (!cancelled) setTraces((prev) => ({ ...prev, ...next }));
+      if (!cancelled) setTraces((prev) => mergeTraces(prev, next, sparks.map((s) => s.id)));
     };
     void load();
     const timer = window.setInterval(load, REFRESH_MS);

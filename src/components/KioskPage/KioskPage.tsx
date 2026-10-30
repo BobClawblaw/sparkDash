@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { memo, useEffect, useMemo, useRef, useState } from "react";
 import "../../styles/kiosk.css";
 import { fetchFleetEnergy, fetchSettings } from "../../api/client";
 import type { FleetEnergy, Settings, SparkSnapshot } from "../../api/types";
@@ -109,7 +109,7 @@ const pctText = (v: number | null) => (v == null || !Number.isFinite(v) ? "—" 
  * One unit on the wall: the Overview card's key figures in large type, sized from the grid cell
  * (container query units), so six units read from across a room.
  */
-function KioskCardView({
+const KioskCardView = memo(function KioskCardView({
   spark,
   headSpark,
   vramContext,
@@ -194,7 +194,7 @@ function KioskCardView({
       </div>
     </article>
   );
-}
+});
 
 function HeadKpi({ value, unit, label, trace, traceKey }: { value: string; unit?: string; label: string; trace?: ReadonlyArray<number | null>; traceKey?: string }) {
   return (
