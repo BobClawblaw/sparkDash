@@ -33,6 +33,7 @@ import { remoteShutdownCommand, spawnLocalShutdown } from "./shutdown.js";
 import { GpuClockManager } from "./gpuclock/GpuClockManager.js";
 import { registerGpuClockFleetRoute, registerGpuClockRoutes } from "./gpuclock/routes.js";
 import {
+  backendForPort,
   decodeBenchManager,
   DECODE_BENCH_DEFAULTS,
   normalizeConcurrencies,
@@ -1436,8 +1437,9 @@ app.post("/api/sparks/:id/llm/bench", async (req, res) => {
       llmList.find((m) => m?.available) ||
       llmList[0];
     if (!modelId) modelId = llm?.modelId || null;
-    // Never infer sampler compatibility from a model name or another port's engine.
-    if (portIndex >= 0) backend = llmList[portIndex]?.backend || null;
+    // Never infer sampler compatibility from a model name, the request body, or another port's
+    // engine: resolved from this port's own snapshot entry (see backendForPort).
+    backend = backendForPort(llmList, port);
     contextLength = Number(llm?.contextLength) > 0 ? Number(llm.contextLength) : null;
   }
 

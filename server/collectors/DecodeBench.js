@@ -339,6 +339,22 @@ function streamPublicResult(r, index, prompt, reqMeta, debug = false) {
  * and EXL3 `/health` totals), and does not exist for a Remote target. Calls `onLive(tps)`
  * once a second while tokens flow, and `onLive(null)` when the wave ends.
  */
+/**
+ * The engine serving `port`, from a unit's LLM snapshot list.
+ *
+ * Matched on each entry's own `port` rather than by position in the configured-port array: the
+ * configured list is raw while the snapshot follows SparkMonitor._llmPorts(), which drops
+ * invalid entries, and the snapshot is the previous poll's, so right after a port is added or
+ * removed the two lists are offset. A positional read would then hand back another port's
+ * engine, and the backend decides the request shape — sending a sampler field a strict
+ * OpenAI-compatible server rejects, or omitting the one TensorFold requires. An unmatched port
+ * stays null: an engine that was not identified must not be guessed at.
+ */
+export function backendForPort(llmList, port) {
+  if (!Array.isArray(llmList)) return null;
+  return llmList.find((entry) => Number(entry?.port) === Number(port))?.backend || null;
+}
+
 export function createLiveRate(streams, onLive, { now = () => performance.now(), intervalMs = 1000, windowMs = 2000 } = {}) {
   const counts = new Array(streams).fill(0);
   const samples = []; // [time, total]
