@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import { strict as assert } from "node:assert";
 import { execFileSync } from "node:child_process";
-import { SystemCollector, MACMON_CMD, parseMacmonSample, parseMacGpuMemory, parseMacNetwork, MAC_NETWORK_CMD } from "../SystemCollector.js";
+import { SystemCollector, MACMON_CMD, parseMacmonSample, parseMacGpuMemory, macGpuUsedMB, parseMacNetwork, MAC_NETWORK_CMD } from "../SystemCollector.js";
 import { DARWIN_UPTIME_CMD } from "../../sparks/SparkMonitor.js";
 
 // `macmon pipe -s 1` output captured from a Mac Studio (M3 Ultra, 512 GB, macOS 27), core lists trimmed.
@@ -197,4 +197,23 @@ ${MAC_NETWORK_CMD}`], { encoding: "utf8" });
   const result = parseMacNetwork(output);
   assert.equal(result.primaryInterface, "en0");
   assert.equal(result.interfaces[0].ip, "192.168.1.10");
+});
+
+test("an implausible GPU share leaves the unified pool unsplit, rather than claiming cpuUsed 0", () => {
+  const ramUsedMB = 185_000;
+  // The ordinary case: a share below the pool's use is taken as measured.
+  assert.equal(macGpuUsedMB({ gpuInUseBytes: 71_400 * 1048576 }, ramUsedMB), 71_400);
+  assert.equal(macGpuUsedMB({ gpuInUseBytes: ramUsedMB * 1048576 }, ramUsedMB), ramUsedMB);
+
+  // Above the whole pool's use the figure is not a GPU share (a duplicate accelerator entry, or
+  // the counter not meaning what we read it as). Capping it would make the caller publish
+  // cpuUsed: 0 — a measured claim that the CPU side holds nothing.
+  assert.equal(macGpuUsedMB({ gpuInUseBytes: (ramUsedMB + 1) * 1048576 }, ramUsedMB), null);
+  assert.equal(macGpuUsedMB({ gpuInUseBytes: 400_000 * 1048576 }, ramUsedMB), null);
+
+  // No figure at all, or no usable pool figure to judge it against, is also unknown.
+  assert.equal(macGpuUsedMB({}, ramUsedMB), null);
+  assert.equal(macGpuUsedMB({ gpuInUseBytes: null }, ramUsedMB), null);
+  assert.equal(macGpuUsedMB({ gpuInUseBytes: Number.NaN }, ramUsedMB), null);
+  assert.equal(macGpuUsedMB({ gpuInUseBytes: 1048576 }, 0), null);
 });

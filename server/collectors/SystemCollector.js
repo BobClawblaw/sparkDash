@@ -190,11 +190,20 @@ export function parseMacGpuMemory(output) {
   return matches.reduce((sum, m) => sum + Number(m[1]), 0);
 }
 
-/** The GPU's share of a macmon sample's RAM in use (MB), capped at it; null when ioreg gave none. */
-function macGpuUsedMB(sample, ramUsedMB) {
+/**
+ * The GPU's share of a macmon sample's RAM in use (MB); null when ioreg gave none.
+ *
+ * A figure at or above the whole pool's use is not a GPU share — duplicate accelerator entries,
+ * or the counter not meaning what we read it as. Capping it there would publish the rest of the
+ * pool as `cpuUsed: 0`, asserting as measured fact that the CPU side holds nothing, so an
+ * implausible reading leaves the pool unsplit instead.
+ */
+export function macGpuUsedMB(sample, ramUsedMB) {
   const bytes = sample?.gpuInUseBytes;
   if (bytes == null || !Number.isFinite(bytes)) return null;
-  return Math.min(ramUsedMB, Math.round(bytes / 1048576));
+  if (!Number.isFinite(ramUsedMB) || ramUsedMB <= 0) return null;
+  const mb = Math.round(bytes / 1048576);
+  return mb > ramUsedMB ? null : mb;
 }
 
 /** Last JSON line of `macmon pipe` output, parsed; null when absent or malformed. */
