@@ -2470,14 +2470,18 @@ if (!startupPreflight.fatal) {
       console.log(`[sparkDash] ${BIND_HOST} is not bindable yet (${err?.code}); retry ${listenAttempts} in ${plan.delayMs / 1000}s — waiting for the network interface.`);
       listenRetryTimer = setTimeout(() => {
         listenRetryTimer = null;
-        server.listen(PORT, BIND_HOST, onListening);
+        // No callback here: listen(..., cb) adds cb as a fresh once("listening") listener and a
+        // failed bind never consumes it, so passing it per attempt would run the whole startup
+        // block once per attempt on eventual success (and warn about a listener leak at 11).
+        server.listen(PORT, BIND_HOST);
       }, plan.delayMs);
       return;
     }
     console.error(`[sparkDash] cannot listen on ${BIND_HOST}:${PORT}: ${err?.message}`);
     process.exit(1);
   });
-  server.listen(PORT, BIND_HOST, onListening);
+  server.once("listening", onListening);
+  server.listen(PORT, BIND_HOST);
   // Monitors and runtimes start ONLY on a successful bind — never on the
   // not-listening path. (Declared after the listen call so the source order
   // stays listen → start, which the occupancy wiring test pins.)
