@@ -980,8 +980,10 @@ test("_applyTensorFoldMetrics: a cached counter with no earlier value, or one th
   await probe._applyTensorFoldMetrics(2);
   txt = splitTxt({ prompt: 1_052_000, cached: 1_000_150, prefillSum: 101.6, prefillCount: 12 });
   await probe._applyTensorFoldMetrics(2);
-  assert.equal(probe.uncachedPrefillTps, 0);
-  assert.equal(probe.prefillTps, 0);
+  // That window cannot be split and no earlier one can be either, so the split is unknown.
+  // A measured 0 here would claim the engine was observed prefilling nothing.
+  assert.equal(probe.uncachedPrefillTps, null);
+  assert.equal(probe.cachedPrefillTps, null);
   // From the next window on it is split.
   txt = splitTxt({ prompt: 1_104_000, cached: 1_050_300, prefillSum: 103.2, prefillCount: 14 });
   await probe._applyTensorFoldMetrics(2);
@@ -990,6 +992,25 @@ test("_applyTensorFoldMetrics: a cached counter with no earlier value, or one th
   txt = splitTxt({ prompt: 1_156_000, cached: 1_000_000, prefillSum: 104.8, prefillCount: 16 });
   await probe._applyTensorFoldMetrics(2);
   assert.equal(probe.uncachedPrefillTps, 1156.25); // not 32,500
+});
+
+test("_applyTensorFoldMetrics: an idle engine's split is unknown until a request has finished", async () => {
+  // An engine that publishes both counters but has served nothing yet. The split has no window
+  // to divide by, so it must stay unknown: a 0 would be charted and summarised as an observed
+  // cached/computed prefill rate for a minute in which nothing was ever measured.
+  let txt = splitTxt({ prompt: 1_000_000, cached: 950_000, prefillSum: 100, prefillCount: 10 });
+  const probe = metricsProbe(() => txt);
+  await probe._applyTensorFoldMetrics(2);
+  assert.equal(probe.cachedPrefillTps, null);
+  assert.equal(probe.uncachedPrefillTps, null);
+  // Nothing finishes: still unknown, not zero.
+  await probe._applyTensorFoldMetrics(2);
+  assert.equal(probe.cachedPrefillTps, null);
+  assert.equal(probe.uncachedPrefillTps, null);
+  // Once a request finishes the split is measured, and a later idle minute is a real zero.
+  txt = splitTxt({ prompt: 1_052_000, cached: 1_000_000, prefillSum: 101.6, prefillCount: 12 });
+  await probe._applyTensorFoldMetrics(2);
+  assert.ok(probe.uncachedPrefillTps > 0, `expected a measured rate, got ${probe.uncachedPrefillTps}`);
 });
 
 test("_applyTensorFoldMetrics: a build with no cached counter keeps the effective per-request rate and no split", async () => {

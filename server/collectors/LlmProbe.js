@@ -191,6 +191,7 @@ export class LlmProbe {
     this._tensorfoldCachedTokens = null;
     /** Finished-request windows of the last TENSORFOLD_PREFILL_WINDOW_MS: [{ computed, cached, sec, at }]. */
     this._tensorfoldPrefillWindow = [];
+    this._tensorfoldSplitSeen = false;
     this.prefillActive = false;
     /** Previous prefill counters by kind; null until first labeled sample. */
     this.lastPrefillKinds = null;
@@ -524,6 +525,7 @@ export class LlmProbe {
     this._tensorfoldPrefillCount = null;
     this._tensorfoldCachedTokens = null;
     this._tensorfoldPrefillWindow = [];
+    this._tensorfoldSplitSeen = false;
     this.prefillActive = false;
     this.lastPrefillKinds = null;
     this.lastTtftSum = null;
@@ -2245,12 +2247,22 @@ export class LlmProbe {
               cachedTok += w.cached;
               sec += w.sec;
             }
-            // Zero once a minute has passed with nothing finished, like the /health path's expiry.
-            const enough = sec >= 0.05;
-            const round2 = (v) => Math.max(0, Math.round(v * 100) / 100);
-            this.uncachedPrefillTps = enough ? round2(computed / sec) : 0;
-            this.cachedPrefillTps = enough ? round2(cachedTok / sec) : 0;
-            this.prefillTps = this.uncachedPrefillTps;
+            // A split needs at least one finished-request window to divide by. Until one has been
+            // recorded the rates are unknown, not zero: publishing 0 here would turn an engine
+            // that has simply served nothing yet into a measured "cached prefill 0 tok/s", and
+            // that zero would be written to the history series as if it had been observed.
+            if (this._tensorfoldPrefillWindow.length > 0) this._tensorfoldSplitSeen = true;
+            if (!this._tensorfoldSplitSeen) {
+              this.uncachedPrefillTps = null;
+              this.cachedPrefillTps = null;
+            } else {
+              // Zero once a minute has passed with nothing finished, like the /health path's expiry.
+              const enough = sec >= 0.05;
+              const round2 = (v) => Math.max(0, Math.round(v * 100) / 100);
+              this.uncachedPrefillTps = enough ? round2(computed / sec) : 0;
+              this.cachedPrefillTps = enough ? round2(cachedTok / sec) : 0;
+              this.prefillTps = this.uncachedPrefillTps;
+            }
           } else if (!measured) {
             if (
               this.perStreamPrefillTps != null &&
