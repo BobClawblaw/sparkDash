@@ -120,3 +120,21 @@ test("redetection clears a version read from a previous backend", async () => {
   const snap = await probe.probe();
   assert.equal(snap.engineVersion, null);
 });
+
+// A version is a measurement like any other: once the probe stops measuring, the chip must
+// not keep presenting the last value it read, which is why `models` is cleared the same way.
+test("a probe that is no longer measuring reports no version", async () => {
+  const { probe } = setup();
+  const live = await probe.probe();
+  assert.equal(live.engineVersion, "0.11.0");
+  assert.equal(live.available, true);
+
+  // An API key added to a previously open endpoint: still vLLM, no longer readable.
+  probe.authOpen = false;
+  const closed = probe._getSnapshot();
+  assert.equal(closed.available, false);
+  assert.equal(closed.engineVersion, null, "a closed endpoint must not report a cached version");
+  assert.deepEqual(closed.models, []);
+  // The value is retained internally, so one readable poll restores it without a refetch.
+  assert.equal(probe.engineVersion, "0.11.0");
+});

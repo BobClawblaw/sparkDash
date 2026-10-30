@@ -3250,9 +3250,16 @@ export class LlmProbe {
       backend: this.backendType,
       modelId: this.models.length > 1 ? this.models[0] : this.modelId || null,
       modelPath: this.modelPath || null,
-      /** Only vLLM and TensorFold report a version we read today; other backends stay null. */
+      /**
+       * Only vLLM and TensorFold report a version we read today; other backends stay null.
+       * A probe that is no longer measuring (the endpoint closed, or an API key was added so
+       * authOpen is false) must not keep presenting the version it last read, for the same
+       * reason `models` is cleared below.
+       */
       engineVersion:
-        this.backendType === "vllm" || this.backendType === "tensorfold" ? this.engineVersion : null,
+        metricsLive && (this.backendType === "vllm" || this.backendType === "tensorfold")
+          ? this.engineVersion
+          : null,
       models: metricsLive ? [...this.models] : [],
       // Strata advertises aliases for one loaded engine, sharing its native
       // context limit. Genuine multi-model routers still have no shared limit.

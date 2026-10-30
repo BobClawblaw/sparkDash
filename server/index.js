@@ -80,13 +80,13 @@ import {
 import { testSparkConnectivity } from "./connectivity.js";
 import { TailscaleProbe } from "./collectors/TailscaleProbe.js";
 import { inspectStartupPreflight, logStartupPreflight } from "./startupPreflight.js";
+import { readServerVersion } from "./serverVersion.js";
 import { PROMETHEUS_CONTENT_TYPE, metricsEntries, renderPrometheusMetrics } from "./prometheus.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const ROOT = path.resolve(__dirname, "..");
-/** Version of this running server, from the package manifest beside server/. */
-const SERVER_VERSION = JSON.parse(fs.readFileSync(path.join(ROOT, "package.json"), "utf8")).version;
+const SERVER_VERSION = readServerVersion(ROOT);
 
 // Default to loopback. A non-loopback bind without SPARKDASH_TOKEN stays OPEN —
 // anyone who can reach the port can mutate settings and power units — unless
