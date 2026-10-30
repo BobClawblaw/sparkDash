@@ -9,6 +9,13 @@
  * This detector probes a head's paired workers only while every one of the head's own ports is
  * down, throttled to one probe per window, and returns a display hint. It never writes registry
  * config and never swaps roles: moving rank 0 is the operator's call.
+ *
+ * Reach: each probe is a one-shot direct request, so it only finds an engine whose port is
+ * reachable from the dashboard. LlmProbe's SSH-tunnel fallback needs two consecutive failures
+ * on a probe that is kept alive (TUNNEL_AFTER_FAILURES), which a fresh probe per attempt never
+ * accumulates, so an engine bound to the worker's localhost is not detected and no hint appears.
+ * That is deliberate — a background detector should not open SSH tunnels to every paired worker
+ * every window — and it means an absent hint is not evidence that the engine has not moved.
  */
 
 /** Minimum gap between worker probes for one head while it stays down. */
@@ -89,4 +96,52 @@ export async function detectLlmMovedToWorker({ head, sparks, probe, state, now =
 
   state?.set(head.id, { at: now, hint });
   return hint;
+}
+
+/**
+ * Reconcile one refresh of the moved-engine hints for the whole fleet.
+ *
+ * Kept here rather than in the route file so the bookkeeping is testable: the three maps are
+ * long-lived, and each of them has a way of going wrong that no amount of detector testing
+ * would catch — an entry outliving the unit that owns it, or the same move being announced
+ * over and over because a worker answers intermittently.
+ *
+ * @param {object} args
+ * @param {object[]} args.sparks      every fleet snapshot, workers carrying `workerHeadId`
+ * @param {Map<string, object>} args.hints      head id → current display hint
+ * @param {Map<string, object>} args.probeState head id → detector throttle memory
+ * @param {Map<string, object>} args.announced   head id → the move already reported as an event
+ * @param {(head: object) => Promise<object|null>} args.detect
+ * @param {(hint: object, headId: string) => void} [args.onEvent]
+ */
+export async function reconcileMovedEngineHints({ sparks, hints, probeState, announced, detect, onEvent }) {
+  for (const snap of sparks || []) {
+    if (snap.role !== "head" || !llmDown(snap)) {
+      hints.delete(snap.id);
+      probeState.delete(snap.id);
+      // A head that answers again, or a unit that is no longer a head: the next move is news.
+      announced.delete(snap.id);
+      continue;
+    }
+    const hint = await detect(snap);
+    if (!hint) {
+      hints.delete(snap.id);
+      continue;
+    }
+    hints.set(snap.id, hint);
+    // Announce a move once, and again only when it names a different worker or port. A probe
+    // that fails transiently clears the live hint, so comparing against that would re-announce
+    // the same move every window for a worker that answers intermittently.
+    const last = announced.get(snap.id);
+    if (!last || last.workerId !== hint.workerId || last.port !== hint.port) {
+      announced.set(snap.id, { workerId: hint.workerId, port: hint.port });
+      onEvent?.(hint, snap.id);
+    }
+  }
+  // A unit deleted from the registry leaves the snapshot list without passing through the loop,
+  // so prune what it left behind against the live id set.
+  const live = new Set((sparks || []).map((s) => s.id));
+  for (const map of [hints, probeState, announced]) {
+    for (const id of [...map.keys()]) if (!live.has(id)) map.delete(id);
+  }
 }

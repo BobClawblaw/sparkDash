@@ -11,7 +11,7 @@ import { SparkRegistry } from "./sparks/SparkRegistry.js";
 import { resolveFrontendDir, FRONTEND_MISSING_MESSAGE } from "./frontendDir.js";
 import { SparkMonitor } from "./sparks/SparkMonitor.js";
 import { LlmProbe } from "./collectors/LlmProbe.js";
-import { detectLlmMovedToWorker, llmDown } from "./sparks/LlmMovedToWorker.js";
+import { detectLlmMovedToWorker, reconcileMovedEngineHints } from "./sparks/LlmMovedToWorker.js";
 import { sshExec } from "./collectors/ssh.js";
 import { comfyCancelJob } from "./collectors/comfyActions.js";
 import {
@@ -2414,7 +2414,11 @@ function forceBroadcast() {
 // and surface a hint. Never write config, never swap roles.
 const movedEngineHints = new Map();
 const movedEngineProbeState = new Map();
+// The hint each head last raised an event for, kept apart from the live hint so that a worker
+// answering intermittently does not re-announce the same move every probe window.
+const movedEngineAnnounced = new Map();
 let movedEngineWatchTimer = null;
+let movedEngineRefreshing = false;
 
 async function probeWorkerLlm(workerSpark, port) {
   if (!workerSpark) return null;
@@ -2429,42 +2433,40 @@ async function probeWorkerLlm(workerSpark, port) {
 }
 
 async function refreshMovedEngineHints() {
-  // Workers report no `llmPorts` in their snapshot (LLM polling is off for them by design);
-  // the registry keeps the configured ports the detector needs to probe.
-  const sparks = orderedSnapshots().map((s) => {
-    const cfg = registry.getSpark(s.id);
-    return cfg?.llmPorts?.length ? { ...s, llmPorts: cfg.llmPorts } : s;
-  });
-  for (const snap of sparks) {
-    if (snap.role !== "head") {
-      movedEngineHints.delete(snap.id);
-      continue;
-    }
-    if (!llmDown(snap)) {
-      movedEngineHints.delete(snap.id);
-      movedEngineProbeState.delete(snap.id);
-      continue;
-    }
-    const hint = await detectLlmMovedToWorker({
-      head: snap,
-      sparks,
-      probe: (workerSnap, port) => probeWorkerLlm(registry.getSpark(workerSnap.id), port),
-      state: movedEngineProbeState,
+  // Probes are awaited one after another, each a fresh detection with its own timeout, so a
+  // head with several paired workers and ports can outlast the 30 s interval. Without this the
+  // timer would stack overlapping runs that re-probe and fight over the throttle state.
+  if (movedEngineRefreshing) return;
+  movedEngineRefreshing = true;
+  try {
+    // Workers report no `llmPorts` in their snapshot (LLM polling is off for them by design);
+    // the registry keeps the configured ports the detector needs to probe.
+    const sparks = orderedSnapshots().map((s) => {
+      const cfg = registry.getSpark(s.id);
+      return cfg?.llmPorts?.length ? { ...s, llmPorts: cfg.llmPorts } : s;
     });
-    if (!hint) {
-      movedEngineHints.delete(snap.id);
-      continue;
-    }
-    const prev = movedEngineHints.get(snap.id);
-    movedEngineHints.set(snap.id, hint);
-    if (!prev || prev.workerId !== hint.workerId || prev.port !== hint.port) {
-      recordEvent({
-        sparkId: snap.id,
-        type: "llm.moved_to_worker",
-        severity: "warn",
-        message: hint.message,
-      });
-    }
+    await reconcileMovedEngineHints({
+      sparks,
+      hints: movedEngineHints,
+      probeState: movedEngineProbeState,
+      announced: movedEngineAnnounced,
+      detect: (head) =>
+        detectLlmMovedToWorker({
+          head,
+          sparks,
+          probe: (workerSnap, port) => probeWorkerLlm(registry.getSpark(workerSnap.id), port),
+          state: movedEngineProbeState,
+        }),
+      onEvent: (hint, headId) =>
+        recordEvent({
+          sparkId: headId,
+          type: "llm.moved_to_worker",
+          severity: "warn",
+          message: hint.message,
+        }),
+    });
+  } finally {
+    movedEngineRefreshing = false;
   }
 }
 

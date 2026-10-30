@@ -5,6 +5,7 @@ import {
   detectLlmMovedToWorker,
   llmDown,
   pairedWorkers,
+  reconcileMovedEngineHints,
   workerPorts,
 } from "../LlmMovedToWorker.js";
 
@@ -175,4 +176,97 @@ test("the first answering port wins across several workers", async () => {
   assert.deepEqual(seen, ["w1:8888", "w2:8888", "w2:8000"]);
   assert.equal(hint.workerId, "w2");
   assert.equal(hint.port, 8000);
+});
+
+// ─── Per-refresh bookkeeping ───
+// The three maps outlive every refresh, and the display hint is not a safe record of what has
+// already been reported, because a transient probe failure clears it.
+
+function headSnap(id, { online = true, llm = [{ available: false }], role = "head" } = {}) {
+  return { id, role, online, metrics: { llm } };
+}
+function maps() {
+  return { hints: new Map(), probeState: new Map(), announced: new Map() };
+}
+const hintFor = (workerId, port) => ({ workerId, port, message: `${workerId}:${port}` });
+
+test("a move is announced once, and not again each time a flapping worker answers", async () => {
+  const m = maps();
+  const events = [];
+  const sparks = [headSnap("h1")];
+  const run = (detect) =>
+    reconcileMovedEngineHints({ sparks, ...m, detect, onEvent: (hint, id) => events.push(`${id}/${hint.workerId}:${hint.port}`) });
+
+  await run(async () => hintFor("w1", 8888));
+  assert.deepEqual(events, ["h1/w1:8888"], "the first detection is news");
+
+  // The same move seen again changes nothing.
+  await run(async () => hintFor("w1", 8888));
+  assert.deepEqual(events, ["h1/w1:8888"]);
+
+  // The worker stops answering for one window, so the live hint is cleared...
+  await run(async () => null);
+  assert.equal(m.hints.has("h1"), false, "no hint while nothing answers");
+  // ...and when it answers again that is still the same move, not a new one.
+  await run(async () => hintFor("w1", 8888));
+  assert.deepEqual(events, ["h1/w1:8888"], "a flapping worker must not re-announce every window");
+
+  // A genuinely different worker or port is news again.
+  await run(async () => hintFor("w2", 8888));
+  await run(async () => hintFor("w2", 9000));
+  assert.deepEqual(events, ["h1/w1:8888", "h1/w2:8888", "h1/w2:9000"]);
+});
+
+test("a head that answers again makes the next move news", async () => {
+  const m = maps();
+  const events = [];
+  await reconcileMovedEngineHints({
+    sparks: [headSnap("h1")], ...m,
+    detect: async () => hintFor("w1", 8888),
+    onEvent: (hint, id) => events.push(`${id}/${hint.workerId}`),
+  });
+  // The operator swaps the roles back: the head answers, so everything about it is forgotten.
+  await reconcileMovedEngineHints({
+    sparks: [headSnap("h1", { llm: [{ available: true }] })], ...m,
+    detect: async () => { throw new Error("must not probe a head that answers"); },
+  });
+  assert.deepEqual([m.hints.size, m.probeState.size, m.announced.size], [0, 0, 0]);
+  // And if it moves again later, that is reported.
+  await reconcileMovedEngineHints({
+    sparks: [headSnap("h1")], ...m,
+    detect: async () => hintFor("w1", 8888),
+    onEvent: (hint, id) => events.push(`${id}/${hint.workerId}`),
+  });
+  assert.deepEqual(events, ["h1/w1", "h1/w1"]);
+});
+
+test("a unit that leaves the fleet, or stops being a head, leaves nothing behind", async () => {
+  const m = maps();
+  const sparks = [headSnap("h1"), headSnap("h2")];
+  await reconcileMovedEngineHints({ sparks, ...m, detect: async (h) => hintFor(`w-${h.id}`, 8888) });
+  assert.deepEqual([...m.hints.keys()].sort(), ["h1", "h2"]);
+  assert.deepEqual([...m.announced.keys()].sort(), ["h1", "h2"]);
+
+  // h2 is demoted to a worker: its entries go, including the throttle state.
+  await reconcileMovedEngineHints({
+    sparks: [headSnap("h1"), headSnap("h2", { role: "worker" })], ...m,
+    detect: async () => hintFor("w-h1", 8888),
+  });
+  assert.deepEqual([...m.hints.keys()], ["h1"]);
+  assert.deepEqual([...m.probeState.keys()], []);
+  assert.deepEqual([...m.announced.keys()], ["h1"]);
+
+  // h1 is deleted from the registry: it never reaches the loop, so pruning has to catch it.
+  await reconcileMovedEngineHints({ sparks: [], ...m, detect: async () => hintFor("x", 1) });
+  assert.deepEqual([m.hints.size, m.probeState.size, m.announced.size], [0, 0, 0]);
+});
+
+test("the refresh does not probe a head that is offline or has never been polled", async () => {
+  const m = maps();
+  let probed = 0;
+  await reconcileMovedEngineHints({
+    sparks: [headSnap("down", { online: false }), headSnap("fresh", { llm: [] })], ...m,
+    detect: async () => { probed += 1; return null; },
+  });
+  assert.equal(probed, 0, "an offline head is a down machine, and an unpolled one proves nothing");
 });
