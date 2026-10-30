@@ -288,8 +288,12 @@ export interface GpuMetrics {
   processes?: Array<{ pid: number; name: string; vramMB: number }>;
   /** NVIDIA clock throttle / thermal slowdown state from nvidia-smi. */
   throttle?: GpuThrottle | null;
-  /** Kernel NVRM NV_ERR_NO_MEMORY count since boot (cached ~60s). */
-  nvErrNoMemory?: number;
+  /**
+   * Kernel NVRM NV_ERR_NO_MEMORY count since boot (cached ~60s). null while the since-boot
+   * baseline is still being read a page at a time, or when the journal is unreadable: the
+   * count is unknown then, not zero.
+   */
+  nvErrNoMemory?: number | null;
   /** Kernel Xid errors and OOM-killer kills since boot (cached ~60s). null when the journal is unreadable. */
   kernelErrors?: { xid: number; oomKills: number; lastXid: string | null } | null;
   /**

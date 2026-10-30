@@ -97,3 +97,44 @@ test("host-side timeout kills a stuck journal command and its children", { skip:
     if (err.code !== "ENOENT") throw err;
   }
 });
+
+test("a kernel message of raw bytes is consumed, not re-read forever", async () => {
+  // journalctl JSON renders a field holding non-UTF8 or non-printable bytes as an array of byte
+  // values — a driver logging a hex dump is enough. Rejecting the page would leave the cursor
+  // unadvanced, so the same page would be re-read on every poll and all three counters would
+  // stay frozen at their last value while new Xids went uncounted.
+  let now = 100;
+  const commands = [];
+  const binary = [0x6e, 0x76, 0x72, 0x6d, 0x00, 0xff, 0xfe];
+  const mixed = [
+    boot,
+    JSON.stringify({ MESSAGE: "NV_ERR_NO_MEMORY", _BOOT_ID: boot }),
+    JSON.stringify({ MESSAGE: binary, _BOOT_ID: boot }),
+    JSON.stringify({ MESSAGE: "NVRM: Xid (PCI:0000:01:00): 79", _BOOT_ID: boot }),
+    `-- cursor: ${cursor(1)}`,
+  ].join("\n");
+  const outputs = [mixed, page(["NV_ERR_NO_MEMORY"], 2)];
+  const journal = new KernelJournal(
+    async (cmd) => {
+      commands.push(cmd);
+      return outputs.shift();
+    },
+    60_000,
+    () => now
+  );
+
+  // The page completes: the readable records around the binary one are counted.
+  assert.deepEqual(await journal.read(), { nvErr: 1, xid: 1, oomKills: 0, lastXid: "Xid 79" });
+
+  // And the cursor advanced, so the next read resumes past it and new records are counted.
+  now += 60_000;
+  assert.deepEqual(await journal.read(), { nvErr: 2, xid: 1, oomKills: 0, lastXid: "Xid 79" });
+  assert.ok(commands[1].includes(`--after-cursor='${cursor(1)}'`), commands[1]);
+});
+
+test("a page is small enough to stay inside the command output buffer", () => {
+  // A page that overflows the 10 MB buffer the local and SSH runners allow fails, leaves the
+  // cursor unadvanced, and fails identically on every retry, so the baseline never completes.
+  // Kernel messages can reach ~2 KB.
+  assert.ok(KERNEL_JOURNAL_PAGE_SIZE * 2048 < 10 * 1024 * 1024, `page of ${KERNEL_JOURNAL_PAGE_SIZE} can overflow`);
+});
