@@ -62,11 +62,31 @@ test("mlx-serve: prefill, decode, and completion read live series without a comp
   assert.equal(snap.generationTps, 0);
 });
 
-test("mlx-serve: a server restart (counters drop) reads 0, not negative", async (t) => {
+test("mlx-serve: an interval whose rate is unknown says so, instead of reading 0", async (t) => {
+  // Every rate here goes through Math.max(0, …), so asserting "not negative" would pass against
+  // any implementation. What matters is which of these intervals is a measurement.
   const poll = mlxServeProbe(t);
-  await poll({ prompt: 5000, gen: 500, prefillDone: 5000, prefillLive: 0, genLive: 500, running: 0 });
-  const snap = await poll({ prompt: 0, gen: 0, prefillDone: 0, prefillLive: 100, genLive: 0, running: 1 });
-  assert.ok(snap.prefillTps >= 0 && snap.generationTps >= 0);
+
+  // The first sample has nothing to measure against, so it seeds and reports unmeasured rather
+  // than letting the engine's completion-only counters stand in for a live rate.
+  const first = await poll({ prompt: 5000, gen: 500, prefillDone: 5000, prefillLive: 0, genLive: 500, running: 0 });
+  assert.equal(first.measurementValid, false);
+  assert.match(first.measurementError, /no earlier one/);
+
+  // A real interval is measured.
+  const measured = await poll({ prompt: 5600, gen: 560, prefillDone: 5600, prefillLive: 0, genLive: 560, running: 1 });
+  assert.notEqual(measured.measurementValid, false, measured.measurementError);
+
+  // The engine restarts: the counters drop. That is not an interval in which it generated
+  // nothing, so it must not be reported as a measured 0 tok/s.
+  const restarted = await poll({ prompt: 0, gen: 0, prefillDone: 0, prefillLive: 100, genLive: 0, running: 1 });
+  assert.equal(restarted.measurementValid, false);
+  assert.match(restarted.measurementError, /restart/);
+
+  // And the poll after a restart re-seeds rather than measuring against the dropped counters,
+  // so the whole post-restart total never arrives as one interval's rate.
+  const afterRestart = await poll({ prompt: 60, gen: 6, prefillDone: 60, prefillLive: 0, genLive: 6, running: 1 });
+  assert.equal(afterRestart.measurementValid, false);
 });
 
 test("an mlx-serve endpoint that also answers Ollama's /api/tags is read as vLLM, not Ollama", async () => {
@@ -105,5 +125,31 @@ test("mlx-serve live series are gated by the metrics helper", () => {
   assert.equal(
     LlmProbe._metricsLookLikeMlxServe("vllm:prompt_tokens_total 1\nvllm:generation_tokens_total 1\n"),
     false
+  );
+});
+
+test("exactly mlx-serve is classified from its own card, before any compatibility probe", async () => {
+  // An engine that names itself must not be probed for LM Studio or Ollama: detection re-runs
+  // every minute, so each probe is a 404 a minute in the engine's log — and a compatibility
+  // proxy that answers 200 + JSON on every path would be read as LM Studio first, which is the
+  // misidentification this is meant to prevent.
+  const requested = [];
+  const probe = new LlmProbe({ lanIp: "10.0.0.1" }, 8010);
+  probe._fetch = async (url) => {
+    const path = new URL(String(url)).pathname;
+    requested.push(path);
+    if (path === "/v1/models") {
+      const payload = { data: [{ id: "m", owned_by: "mlx-serve" }] };
+      return { ok: true, status: 200, json: async () => payload, text: async () => JSON.stringify(payload) };
+    }
+    // The proxy case: everything answers.
+    return { ok: true, status: 200, json: async () => ({ data: [] }), text: async () => "{}" };
+  };
+  await probe._detectServerType();
+  assert.equal(probe.backendType, "vllm");
+  assert.deepEqual(
+    requested.filter((p) => p === "/api/v0/models" || p === "/api/tags"),
+    [],
+    `probed compatibility paths: ${requested.join(", ")}`
   );
 });

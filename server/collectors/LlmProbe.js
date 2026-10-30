@@ -667,11 +667,15 @@ export class LlmProbe {
     if (typeof ownedBy === "string" && OWNED_BY_ENGINES.has(ownedBy.toLowerCase())) {
       return /** @type {any} */ (ownedBy.toLowerCase());
     }
+    // Exactly "mlx-serve" is an engine naming itself, so it belongs with OWNED_BY_ENGINES above
+    // and ahead of every probe — it cannot go in that set, which returns the name as the backend,
+    // because mlx-serve serves vLLM-format /metrics and is read by the vLLM reader. Behind the
+    // LM Studio probe it would both log a 404 a minute and, on the compatibility proxy this is
+    // about (200 + JSON on every path), be misclassified as LM Studio before ever being reached.
+    if (typeof ownedBy === "string" && /^mlx-serve$/i.test(ownedBy)) return "vllm";
     // LM Studio first: it answers 200 + JSON on every path, so the heuristic
     // probes below (notably SGLang's /server_info) would misfire on it.
     if (await this._probeIsLmStudio()) return "lmstudio";
-    // Explicit mlx-serve identity wins over compatibility /api/tags endpoints.
-    if (typeof ownedBy === "string" && /^mlx-serve$/i.test(ownedBy)) return "vllm";
     // Ollama second: its native /api/tags contract is unique among engines. Locals
     // (Generated-Computers/Locals) also answers /api/tags, so it must not reach this
     // probe; its exact `owned_by: "locals"` is in OWNED_BY_ENGINES above.
@@ -2361,12 +2365,25 @@ export class LlmProbe {
     }
     const prev = this._mlxServeLive;
     const cur = { gen, prefill: prefillDone + prefillLive };
-    this._mlxServeLive = cur;
-    if (!prev || !(dtSec > 0 && dtSec < 10) || cur.gen < prev.gen || cur.prefill < prev.prefill) {
-      this.generationTps = 0;
-      this.prefillTps = 0;
+    // Three states look the same arithmetically and are all "we do not know this interval's
+    // rate" — not an engine that produced nothing. Reporting 0 would also overwrite the rates
+    // _applyVllmMetrics just computed, so an unmeasured poll has to say so, as the Locals and
+    // Splash readers do, and the cards, the rail and Prometheus then show "—" with the reason.
+    if (!prev) {
+      this._markUnmeasured("first mlx-serve sample; no earlier one to measure against", { reseed: false });
+      this._mlxServeLive = cur;
       return;
     }
+    if (cur.gen < prev.gen || cur.prefill < prev.prefill) {
+      this._markUnmeasured("mlx-serve counters went backwards; the engine restarted");
+      return; // _markUnmeasured cleared the baseline: the next poll re-seeds it.
+    }
+    if (!(dtSec > 0 && dtSec < 10)) {
+      this._markUnmeasured("no mlx-serve sample within 10 s to measure against", { reseed: false });
+      this._mlxServeLive = cur;
+      return;
+    }
+    this._mlxServeLive = cur;
     const rate = (d) => Math.max(0, Math.round((d / dtSec) * 100) / 100);
     this.generationTps = rate(cur.gen - prev.gen);
     this.prefillTps = rate(cur.prefill - prev.prefill);
